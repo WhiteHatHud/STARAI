@@ -1,0 +1,4 @@
+__pycache__/
+case_study_generation.log
+**/output.py
+.env*

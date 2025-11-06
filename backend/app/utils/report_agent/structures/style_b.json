@@ -1,0 +1,90 @@
+[
+  {
+    "section": "learning_objectives",
+    "title": "Learning Objectives",
+    "description": "3-5 clear learning objectives for the styleb",
+    "max_words": 200,
+    "query_templates": [
+      "What key concepts should students learn from this material?",
+      "What skills should students develop through this case?",
+      "What outcomes should this styleb achieve?"
+    ]
+  },
+  {
+    "section": "key_concepts",
+    "title": "Key Concepts and Theoretical Framework",
+    "description": "Theoretical foundations and key concepts to be covered",
+    "max_words": 550,
+    "query_templates": [
+      "What are the main theories or frameworks relevant to this case?",
+      "What concepts should be introduced or reinforced?",
+      "What academic literature supports these concepts?"
+    ]
+  },
+  {
+    "section": "case_overview",
+    "title": "Case Overview and Background",
+    "description": "Summary of the case and relevant background",
+    "max_words": 650,
+    "query_templates": [
+      "What is this case about?",
+      "What background information is essential for understanding?",
+      "What is the historical or organizational context?"
+    ]
+  },
+  {
+    "section": "analysis_application",
+    "title": "Analysis and Application",
+    "description": "How to apply concepts to analyze the case",
+    "max_words": 750,
+    "query_templates": [
+      "How can the theoretical frameworks be applied to this case?",
+      "What analytical approaches are most useful?",
+      "What connections exist between theory and practice?"
+    ]
+  },
+  {
+    "section": "discussion_questions",
+    "title": "Discussion Questions",
+    "description": "5-8 thought-provoking questions for class discussion",
+    "max_words": 350,
+    "query_templates": [
+      "What questions will stimulate critical thinking?",
+      "What questions connect theory to practice?",
+      "What questions encourage students to take different perspectives?"
+    ]
+  },
+  {
+    "section": "class_activities",
+    "title": "Class Activities and Exercises",
+    "description": "Interactive activities to engage students",
+    "max_words": 550,
+    "query_templates": [
+      "What activities would help students engage with the material?",
+      "What exercises demonstrate key concepts?",
+      "What group activities would deepen understanding?"
+    ]
+  },
+  {
+    "section": "teaching_notes",
+    "title": "Teaching Notes and Recommendations",
+    "description": "Guidance for instructors on teaching this material",
+    "max_words": 450,
+    "query_templates": [
+      "What teaching approaches work best for this material?",
+      "What common misconceptions might arise?",
+      "How should the instructor sequence the content?"
+    ]
+  },
+  {
+    "section": "references",
+    "title": "References and Further Reading",
+    "description": "Academic and practical resources for deeper study",
+    "max_words": 250,
+    "query_templates": [
+      "What academic papers support this content?",
+      "What books would provide additional context?",
+      "What resources should students consult?"
+    ]
+  }
+]

@@ -1,0 +1,130 @@
+services:
+  # Production
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: starai_app
+    environment:
+      - APP_ENV=test
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+    profiles: [test]
+
+  # Development only
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: starai_backend
+    ports:
+      - "8000:8000"
+    networks:
+      - default
+    env_file:
+      - ./backend/.env.local
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./frontend/src/presentation_templates:/app/presentation_templates:ro
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./backend
+          target: /app/backend
+          ignore:
+            - __pycache__/
+            - .venv/
+            - venv/
+            - "*.pyc"
+        - action: rebuild
+          path: ./backend/requirements.txt
+    profiles: ["", "dev"]
+
+  # Development only
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: starai_frontend
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./frontend/.env.local
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend/src
+          target: /app/src
+          ignore:
+            - node_modules/
+            - build/
+    networks:
+      - default
+    profiles: ["", "dev"]
+
+  # Redis for Celery task queue
+  redis:
+    image: redis:7-alpine
+    container_name: starai_redis
+    ports:
+      - "6380:6379"  # Map to 6380 on host to avoid conflict
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Celery worker for background tasks
+  celery:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: starai_celery
+    entrypoint: ["celery", "-A", "app.core.celery_manager.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    env_file:
+      - ./backend/.env.local
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+    volumes:
+      - ./frontend/src/presentation_templates:/app/presentation_templates:ro
+    profiles: ["", "dev"]
+
+  mongodb:
+    hostname: mongodb
+    image: mongodb/mongodb-atlas-local
+    container_name: local-atlas
+    environment:
+      - ATLAS_SEARCH_ENABLED=true
+      - ATLAS_SEARCH_HOST=mongodb
+    ports:
+      - "27018:27017"
+      - "27028:27027"
+    volumes:
+      - data:/data/db
+      - config:/data/configdb
+    networks:
+      - default
+
+volumes:
+  data:
+  config:
+
+networks:
+  default:
+    name: starai_combined_network
+    driver: bridge

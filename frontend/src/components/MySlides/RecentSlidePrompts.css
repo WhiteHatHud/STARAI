@@ -1,0 +1,17 @@
+.slide-prompt-card {
+  transition: all 0.3s ease-in-out;
+}
+.slide-prompt-card .ant-typography,
+.slide-prompt-card .anticon {
+  transition: all 0.3s ease-in-out;
+}
+
+.slide-prompt-card:hover .ant-typography {
+  color: var(--primary-hover) !important;
+  transition: all 0.3s ease-in-out;
+}
+
+.slide-prompt-card:hover .anticon {
+  color: var(--primary-hover) !important;
+  transition: all 0.3s ease-in-out;
+}

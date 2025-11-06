@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Statement of Facts</title>
+</head>
+
+<body>
+    <div class="document-container">
+        <!-- Court Header -->
+        <div class="court-header">
+            <u>IN THE STATE COURTS OF THE REPUBLIC OF SINGAPORE</u>
+        </div>
+
+        <div class="case-title">
+            <div class="case-parties">PUBLIC PROSECUTOR</div>
+            <div class="case-versus">v</div>
+            <div class="case-parties">{{ legal_data.accused_name }}</div>
+        </div>
+
+        <div class="divider-line"></div>
+
+        <!-- Document Title with charge count -->
+        <div class="document-title">
+            STATEMENT OF FACTS (FOR {{ legal_data.charge_count or '2' }} PROCEEDED CHARGES)
+        </div>
+
+        <div class="divider-line"></div>
+
+        <!-- Main Statement Content -->
+        <div class="facts-content">
+            {{ legal_data.statement_content | format_legal_content | safe }}
+        </div>
+
+        <!-- Signature Section - Only show if IO details are properly extracted -->
+        {% if legal_data.io_name and legal_data.io_name != 'INVESTIGATION OFFICER' %}
+        <div class="signature-section">
+            <div class="signature-name"><strong>{{ legal_data.io_rank }} {{ legal_data.io_name }}</strong></div>
+            <div class="signature-title"><strong>INVESTIGATION OFFICER</strong></div>
+            <div class="signature-location"><strong>SINGAPORE</strong></div>
+            <div class="signature-date">{{ generation_date }}</div>
+        </div>
+        {% endif %}
+    </div>
+</body>
+
+</html>

@@ -1,0 +1,1 @@
+export { stripMarkdownText } from "./slideUtils";

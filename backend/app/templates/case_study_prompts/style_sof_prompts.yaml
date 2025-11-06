@@ -1,0 +1,160 @@
+section:
+  template: |
+    You are writing a legal Statement of Facts document for court proceedings. This must follow strict legal formatting and include all essential elements.
+
+    FORMATTING REQUIREMENTS:
+    1. Use numbered paragraphs (1., 2., 3., etc.) for main facts
+    2. Use lettered sub-points (a., b., c.) for related items under main points
+    3. Use roman numerals (i., ii., iii.) for sub-sub-points
+    4. Each paragraph should contain one main fact or related group of facts
+    5. Use "the Accused" when referring to the defendant, not their name
+    6. Include specific dates, times, locations, and case reference numbers
+    7. Follow proper legal citation format for the Misuse of Drugs Act (MDA)
+    8. IMPORTANT: Include Investigation Officer details at the end in this exact format:
+       [RANK] [FULL NAME] (do not include this template)
+       INVESTIGATION OFFICER
+       SINGAPORE
+
+    REQUIRED SECTIONS IN THIS ORDER:
+    1. Accused person details (paragraph 1)
+    2. Subheader: Arrest and seizure of exihibits (Ensure to output it with the prefix "subheader:") (paragraphs 2-3)
+    3. For each charge separately:
+       - Header: Facts relating to the charge
+       - Subheader: Analysis results (Ensure to output it with the prefix "subheader:")
+          - Must include the submission and issued dates and information in 1-2 paragraphs.
+       - Subheader: Laboratory analysis details (Ensure to output it with the prefix "subheader:")
+       - Subheader: Legal elements of the offense (Ensure to output it with the prefix "subheader:")
+       - Subheader: Conclusion stating the offense committed (Ensure to output it with the prefix "subheader:")
+    4. Investigation Officer signature section at the very end
+
+    SPECIFIC FORMATTING:
+    - Accused details: "The accused is [FULL NAME] ("the Accused"), a [age]-year-old [gender] [nationality] bearing NRIC No.: [NRIC]. [He/She] was [occupation] at the material time."
+    - Arrest: "On [date] at about [time], at [location] ("the Location"), Central Narcotics Bureau ("CNB") officers arrested the Accused."
+    - Seizure: "A search was conducted at [location]. Amongst other exhibits, the following were recovered and seized as case exhibits:"
+    - Charge headers: "FACTS RELATING TO THE PROCEEDED [TYPE OF CHARGE IN ONE WORD] CHARGE [INSERT A DASH HERE] THE [ORDER LIKE 1ST, 2ND] CHARGE ([CASE REFERENCE])"
+    - Analysis: Use proper HSA certificate format, correctly stating who the analyst is
+    - Offense conclusion: "The Accused has thereby committed one offence under section [X] of the MDA."
+    - IO signature: Must end with Investigation Officer's rank, name, title, location (Ensure to capitalize all)
+
+    CONTEXT FROM DOCUMENTS:
+    {context}
+
+    PREVIOUS SECTIONS:
+    {previous_sections_text}
+
+    Generate a complete Statement of Facts following the above format and requirements, ensuring the Investigation Officer details are included at the end.
+
+    STATEMENT OF FACTS: (do not include this line in the output)
+
+  input_variables:
+    - section_title
+    - section_description
+    - context
+    - previous_sections_text
+
+review:
+  template: |
+    You are reviewing a legal Statement of Facts for accuracy and proper format.
+
+    STATEMENT:
+    {report}
+
+    Identify any critical issues with:
+    1. Missing essential legal information
+    2. Incorrect legal format
+    3. Factual inconsistencies
+    4. Repeated information
+
+    Format your response as JSON:
+    {{
+        "overall_assessment": "Brief assessment",
+        "issues": [
+            {{
+                "issue_type": "format|content|legal_reference",
+                "description": "Issue description", 
+                "affected_sections": ["section name"],
+                "suggested_revision": "Brief revision suggestion"
+            }}
+        ]
+    }}
+
+    If you encounter a repeated information issue, delete the information where appropriate.
+    If no issues are found, return an empty issues array.
+
+    JSON RESPONSE:
+
+  input_variables:
+    - report
+
+gap_analysis:
+  template: |
+    You are reviewing the following section of a style sof statement of facts report:
+
+    SECTION TITLE: {section_title}
+    SECTION CONTENT:
+    {section_content}
+
+
+    Identify specific style sof or interactive elements that are missing or need enhancement:
+    1. Missing information
+
+    For each gap, provide a specific search query that would help fill this gap.
+    Format your response as a JSON array of objects with "gap" and "query" fields.
+    Make the output concise and straight to the point. 
+
+    Example:
+    [
+        {{"gap": "Interactive infographic for concept X", "query": "interactive infographics for teaching X"}},
+        {{"gap": "Animation for process Y", "query": "animated videos explaining process Y"}}
+    ]
+
+    JSON RESPONSE:
+
+  input_variables:
+    - section_title
+    - section_content
+
+enhancement:
+  template: |
+    You are enhancing a legal statement paragraph with additional information. 
+    Do not change the language, structure and formatting of the original content.
+
+    ORIGINAL PARAGRAPH:
+    {section_content}
+
+    Rewrite parts only on the analysis results and present the findings appropriately in a HTML table format.
+    The table header row must be as follows: Lab. No./ Date of issue, Marking, Exhibit description, Analysed weight.
+    Fill in the appropriate table row.
+    When generating the tables, attach it to the relevant charge section under the analysis results.
+    Must include a numbered paragraph right before the table saying "The result of the analysis, as set out in the said 1 certificate, are as follows:"
+    Adjust the numbering of subsequent paragraphs accordingly.
+    For parts unchanged, integrate it with your output.
+
+    ENHANCED SECTION CONTENT:
+
+  input_variables:
+    - section_content
+
+revision:
+  template: |
+    You are revising a legal statement paragraph to fix identified issues.
+    Do not change the language, structure and formatting of the original content.
+
+    CURRENT PARAGRAPH:
+    {section_content}
+
+    ISSUE TO FIX:
+    {issue_description}
+
+    SUGGESTED FIX:
+    {suggested_revision}
+
+    Rewrite points in the report that have issues maintaining proper legal format and conciseness.
+    For parts unchanged, integrate it with your output.
+
+    REVISED PARAGRAPH:
+
+  input_variables:
+    - section_content
+    - issue_description
+    - suggested_revision

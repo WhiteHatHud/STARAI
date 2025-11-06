@@ -1,0 +1,17 @@
+#For the Frontend
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Expose React dev server port
+EXPOSE 3000
+
+# Run React dev server
+CMD ["npm", "start"]

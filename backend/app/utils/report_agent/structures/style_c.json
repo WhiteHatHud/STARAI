@@ -1,0 +1,91 @@
+[
+  {
+    "section": "learning_pathway",
+    "title": "Learning Pathway Overview",
+    "description": "A roadmap for the stylec learning experience",
+    "max_words": 300,
+    "query_templates": [
+      "What is the overall learning journey for this content?",
+      "How should topics be sequenced for optimal learning?",
+      "What are the key milestones in the learning pathway?"
+    ],
+    "feedback_query": "Regenerate the learning pathway overview, considering the following user feedback."
+  },
+  {
+    "section": "multimedia_modules",
+    "title": "Multimedia Content Modules",
+    "description": "Description of videos, animations, and interactive media",
+    "max_words": 550,
+    "query_templates": [
+      "What multimedia elements would enhance this content?",
+      "How can videos or animations explain complex concepts?",
+      "What visual elements should be included?"
+    ]
+  },
+  {
+    "section": "interactive_elements",
+    "title": "Interactive Learning Elements",
+    "description": "Simulations, scenarios, and interactive exercises",
+    "max_words": 650,
+    "query_templates": [
+      "What interactive activities would engage learners?",
+      "What simulations or scenarios would be effective?",
+      "How can learners actively engage with the material?"
+    ]
+  },
+  {
+    "section": "assessment_components",
+    "title": "Assessment Components",
+    "description": "Quizzes, assignments, and assessment strategies",
+    "max_words": 450,
+    "query_templates": [
+      "What assessment methods would measure learning?",
+      "What types of questions or tasks would evaluate understanding?",
+      "How should assessment be integrated into the learning experience?"
+    ]
+  },
+  {
+    "section": "application_scenarios",
+    "title": "Practical Application Scenarios",
+    "description": "Real-world applications and case examples",
+    "max_words": 650,
+    "query_templates": [
+      "What real-world scenarios demonstrate these concepts?",
+      "How can learners apply this knowledge practically?",
+      "What case examples illustrate key points?"
+    ]
+  },
+  {
+    "section": "discussion_forums",
+    "title": "StyleC Discussion Forums",
+    "description": "Collaborative discussion topics and activities",
+    "max_words": 350,
+    "query_templates": [
+      "What discussion topics would foster collaboration?",
+      "How can learners share perspectives and insights?",
+      "What guided discussions would deepen understanding?"
+    ]
+  },
+  {
+    "section": "supplementary_resources",
+    "title": "Supplementary Resources",
+    "description": "Additional materials and resources for extended learning",
+    "max_words": 300,
+    "query_templates": [
+      "What additional resources would enhance learning?",
+      "What external tools or platforms should be incorporated?",
+      "What materials support different learning styles?"
+    ]
+  },
+  {
+    "section": "feedback_mechanisms",
+    "title": "Feedback Mechanisms",
+    "description": "Methods for providing feedback and supporting learner progress",
+    "max_words": 350,
+    "query_templates": [
+      "How should feedback be provided to learners?",
+      "What self-assessment tools would be beneficial?",
+      "How can progress be monitored and supported?"
+    ]
+  }
+]

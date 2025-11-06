@@ -1,0 +1,181 @@
+/* DocumentToContentBridge.css */
+.document-bridge-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.bridge-description {
+  margin-bottom: 32px;
+}
+
+.option-cards {
+  margin-top: 16px;
+}
+
+.hover-lift {
+  height: 100%;
+  transition: all 0.3s;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hover-lift:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.hover-lift.dark:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.option-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 8px;
+}
+
+.option-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  color: #1890ff;
+}
+
+.option-features {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.document-count-indicator {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background-color: rgba(24, 144, 255, 0.1);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #1890ff;
+}
+
+.dark .document-count-indicator {
+  background-color: rgba(24, 144, 255, 0.2);
+  color: #69c0ff;
+}
+
+.model-selector {
+  margin-bottom: 25px;
+}
+
+/* Template Cards Section */
+.templates-section {
+  margin-top: 32px;
+}
+
+.template-card {
+  height: 200px;
+  transition: all 0.3s;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.template-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+
+.template-card.dark:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+}
+
+.template-card .ant-card-body {
+  padding: 12px;
+  height: calc(100% - 45px);
+  overflow: hidden;
+  position: relative;
+}
+
+/* Template action buttons styling */
+.template-card .template-action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 0.3s ease;
+}
+
+.template-card:hover .template-action-buttons {
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.template-card .template-delete-btn {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.1);
+  width: 28px;
+  height: 28px;
+  display: flex;
+}
+
+.template-card .template-edit-btn {
+  background: white;
+}
+
+.template-card.dark .template-edit-btn:hover {
+  background: rgba(24, 144, 255, 0.2);
+}
+
+.template-card.dark .template-delete-btn:hover {
+  background: rgba(255, 77, 79, 0.2);
+}
+
+.template-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.template-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1890ff;
+  line-height: 1.3;
+}
+
+.dark .template-title {
+  color: #69c0ff;
+}
+
+.template-metadata {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dark .template-metadata {
+  color: #999;
+}
+
+.template-description {
+  font-size: 13px;
+  color: #8c8c8c;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.dark .template-description {
+  color: #bfbfbf;
+}

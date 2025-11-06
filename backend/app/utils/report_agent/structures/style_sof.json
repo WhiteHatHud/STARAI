@@ -1,0 +1,22 @@
+[
+  {
+    "section": "statement_of_facts",
+    "title": "Statement of Facts",
+    "description": "Complete statement of facts for legal proceedings",
+    "max_words": 2000,
+    "query_templates": [
+      "What is the exact date, time and location of the arrest?",
+      "What is the accused person's full name, age, NRIC, nationality and occupation?",
+      "Where did the officers find these exhibits and how were they seized?",
+      "What were the specific exhibits found and how are they marked?",
+      "What are the specific charges faced by the accused with case reference numbers?",
+      "Which exhibits were relevant to each specific charge?",
+      "When were the exhibits sent for analysis and who conducted the analysis?",
+      "What were the detailed results from the laboratory analysis?",
+      "What is the legal basis for each charge under the MDA?",
+      "What evidence shows the accused's knowledge and intent for each charge?",
+      "Who is the Investigation Officer handling this case? What is their rank and full name?",
+      "What is the date when this statement of facts was prepared or signed?"
+    ]
+  }
+]
