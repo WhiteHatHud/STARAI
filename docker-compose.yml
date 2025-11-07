@@ -32,7 +32,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./frontend/src/presentation_templates:/app/presentation_templates:ro
+      - ./newfrontend/src/presentation_templates:/app/presentation_templates:ro
     develop:
       watch:
         - action: sync+restart
@@ -50,17 +50,17 @@ services:
   # Development only
   frontend:
     build:
-      context: ./frontend
+      context: ./newfrontend
       dockerfile: Dockerfile.dev
     container_name: starai_frontend
     ports:
       - "3000:3000"
     env_file:
-      - ./frontend/.env.local
+      - ./newfrontend/.env.local
     develop:
       watch:
         - action: sync
-          path: ./frontend/src
+          path: ./newfrontend/src
           target: /app/src
           ignore:
             - node_modules/
@@ -101,7 +101,7 @@ services:
     networks:
       - default
     volumes:
-      - ./frontend/src/presentation_templates:/app/presentation_templates:ro
+      - ./newfrontend/src/presentation_templates:/app/presentation_templates:ro
     profiles: ["", "dev"]
 
   mongodb:

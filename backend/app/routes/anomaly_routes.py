@@ -146,6 +146,33 @@ async def get_dataset(
         raise HTTPException(status_code=500, detail="Failed to retrieve dataset")
 
 
+@router.delete("/datasets/delete-all")
+async def delete_all_datasets(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Delete ALL datasets for the current user.
+
+    - Deletes all dataset records from database
+    - Removes all S3 files
+    - Cascades deletion to all anomalies, reports, and sessions
+    - Returns summary of deletion operation
+    """
+    try:
+        result = await anomaly_repo.delete_all_user_datasets(current_user)
+
+        logger.info(
+            f"Deleted all datasets for user {current_user.username}: "
+            f"{result['deleted_count']} deleted, {result['failed_count']} failed"
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error deleting all datasets: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete all datasets")
+
+
 @router.delete("/datasets/{dataset_id}", status_code=204)
 async def delete_dataset(
     dataset_id: str,
@@ -155,6 +182,7 @@ async def delete_dataset(
     Delete a dataset and all associated anomalies/reports.
 
     - Verifies ownership
+    - Deletes S3 file
     - Cascades deletion to anomalies, reports, and sessions
     """
     try:

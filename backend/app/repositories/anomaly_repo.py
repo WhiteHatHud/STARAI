@@ -150,9 +150,18 @@ async def update_dataset_status(
 
 
 async def delete_dataset(dataset_id: str, current_user: User) -> bool:
-    """Delete a dataset and all associated anomalies/reports"""
-    # Verify ownership
-    await get_dataset(dataset_id, current_user)
+    """Delete a dataset and all associated anomalies/reports, including S3 file"""
+    # Verify ownership and get dataset info
+    dataset = await get_dataset(dataset_id, current_user)
+
+    # Delete S3 file
+    try:
+        from app.core.s3_manager import s3_manager
+        s3_manager.delete_file(dataset.s3_key)
+        logger.info(f"Deleted S3 file: {dataset.s3_key}")
+    except Exception as e:
+        logger.error(f"Error deleting S3 file {dataset.s3_key}: {str(e)}")
+        # Continue with database deletion even if S3 deletion fails
 
     # Delete associated data
     anomalies_collection.delete_many({"dataset_id": dataset_id})
@@ -164,6 +173,58 @@ async def delete_dataset(dataset_id: str, current_user: User) -> bool:
 
     logger.info(f"Deleted dataset {dataset_id} and associated data")
     return result.deleted_count > 0
+
+
+async def delete_all_user_datasets(current_user: User) -> dict:
+    """Delete ALL datasets for a user, including all S3 files and associated data"""
+    from app.core.s3_manager import s3_manager
+
+    # Get all user datasets directly from DB
+    query = {"user_id": str(current_user.id)}
+    cursor = datasets_collection.find(query)
+    datasets = list(cursor)
+
+    deleted_count = 0
+    failed_count = 0
+
+    for doc in datasets:
+        dataset_id = None
+        try:
+            dataset_id = str(doc["_id"])
+            s3_key = doc.get("s3_key")
+
+            # Delete S3 file
+            if s3_key:
+                try:
+                    s3_manager.delete_file(s3_key)
+                    logger.info(f"Deleted S3 file: {s3_key}")
+                except Exception as e:
+                    logger.error(f"Error deleting S3 file {s3_key}: {str(e)}")
+                    # Continue with database deletion even if S3 deletion fails
+
+            # Delete associated data
+            anomalies_collection.delete_many({"dataset_id": dataset_id})
+            anomaly_reports_collection.delete_many({"dataset_id": dataset_id})
+            analysis_sessions_collection.delete_many({"dataset_id": dataset_id})
+
+            # Delete dataset
+            result = datasets_collection.delete_one({"_id": doc["_id"]})
+            if result.deleted_count > 0:
+                deleted_count += 1
+            else:
+                failed_count += 1
+
+        except Exception as e:
+            logger.error(f"Error deleting dataset {dataset_id}: {str(e)}")
+            failed_count += 1
+
+    logger.info(f"Deleted {deleted_count} datasets for user {current_user.username}, {failed_count} failed")
+
+    return {
+        "deleted_count": deleted_count,
+        "failed_count": failed_count,
+        "total_processed": deleted_count + failed_count
+    }
 
 
 # ============================================================================
