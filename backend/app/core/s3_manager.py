@@ -406,3 +406,26 @@ class S3Manager:
 
 # Create a singleton instance
 s3_manager = S3Manager()
+
+
+# Helper function for simple uploads (used by anomaly detection)
+async def upload_to_s3(file_content: bytes, s3_key: str, content_type: str) -> bool:
+    """
+    Simple wrapper for uploading files to S3.
+
+    Args:
+        file_content: Bytes content of the file
+        s3_key: S3 object key (path in bucket)
+        content_type: MIME type
+
+    Returns:
+        bool: True if upload successful, False otherwise
+    """
+    try:
+        file_obj = io.BytesIO(file_content)
+        result = s3_manager.upload_file(file_obj, s3_key, content_type=content_type)
+        # upload_file returns {"key": ..., "url": ..., "bucket": ...} on success
+        return bool(result and result.get('url'))
+    except Exception as e:
+        logger.error(f"Error uploading to S3: {str(e)}")
+        return False

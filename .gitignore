@@ -78,3 +78,16 @@ migrate_to_reports.sh
 # Test scripts (optional - uncomment if you want to exclude)
 # test_*.py
 # test_*.sh
+
+# Large ML/Data files - Model training data and datasets
+Model/**/*.npy
+Model/**/*.h5
+Model/**/*.keras
+Model/**/*.csv
+Model/**/*.pkl
+
+# Generated test datasets
+test_dataset_*.xlsx
+test_dataset_*.csv
+beth_*.csv
+*_sample_*.csv

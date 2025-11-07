@@ -31,110 +31,51 @@ const { Dragger } = Upload;
 const HomePage = () => {
   const { token: themeToken } = theme.useToken();
   const navigate = useNavigate();
-  const { user, token, setCurrentCase } = useStore();
+  const { user, token } = useStore();
 
   const [uploading, setUploading] = useState(false);
-  const [uploads, setUploads] = useState([]);
+  const [datasets, setDatasets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [defaultCaseId, setDefaultCaseId] = useState(null);
   const dataFetchedRef = useRef(false);
 
-  // Fetch or create default "Reports" case
-  const ensureDefaultCase = useCallback(async () => {
-    try {
-      // Get all cases
-      const casesResponse = await axios.get(
-        `${import.meta.env.VITE_API_BASE_URL}/cases/`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      let reportsCase = casesResponse.data?.find(
-        (c) => c.name === "Reports"
-      );
-
-      // If no "Reports" case exists, create one
-      if (!reportsCase) {
-        const createResponse = await axios.post(
-          `${import.meta.env.VITE_API_BASE_URL}/cases/`,
-          { name: "Reports" },
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        reportsCase = createResponse.data;
-      }
-
-      setDefaultCaseId(reportsCase.id);
-      return reportsCase.id;
-    } catch (error) {
-      console.error("Error ensuring default case:", error);
-      message.error("Failed to initialize upload folder");
-      return null;
-    }
-  }, [token]);
-
-  // Fetch all uploaded documents from all cases
-  const fetchUploads = useCallback(async () => {
+  // Fetch all uploaded datasets
+  const fetchDatasets = useCallback(async () => {
     if (dataFetchedRef.current) return;
 
     setLoading(true);
     try {
-      // Get all cases
-      const casesResponse = await axios.get(
-        `${import.meta.env.VITE_API_BASE_URL}/cases/`,
+      const response = await axios.get(
+        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      const allDocuments = [];
-
-      // Get documents for each case
-      for (const caseItem of casesResponse.data || []) {
-        try {
-          const docsResponse = await axios.get(
-            `${import.meta.env.VITE_API_BASE_URL}/cases/${caseItem.id}/documents/`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-
-          if (docsResponse.data && Array.isArray(docsResponse.data)) {
-            docsResponse.data.forEach((doc) => {
-              allDocuments.push({
-                ...doc,
-                caseName: caseItem.name,
-                caseId: caseItem.id,
-              });
-            });
-          }
-        } catch (error) {
-          console.error(`Error fetching documents for case ${caseItem.id}:`, error);
-        }
-      }
-
       // Sort by upload date (newest first)
-      allDocuments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      const sortedDatasets = (response.data || []).sort(
+        (a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at)
+      );
 
-      setUploads(allDocuments);
+      setDatasets(sortedDatasets);
       dataFetchedRef.current = true;
     } catch (error) {
-      console.error("Error fetching uploads:", error);
-      message.error("Failed to load uploaded files");
+      console.error("Error fetching datasets:", error);
+      message.error("Failed to load uploaded datasets");
     } finally {
       setLoading(false);
     }
   }, [token]);
 
   useEffect(() => {
-    ensureDefaultCase();
-    fetchUploads();
-  }, [ensureDefaultCase, fetchUploads]);
+    fetchDatasets();
+  }, [fetchDatasets]);
 
   // Handle file upload
   const handleUpload = async (file) => {
-    // Validate .xlsx only
-    if (!file.name.toLowerCase().endsWith('.xlsx')) {
-      message.error('Only .xlsx files are supported. PDFs, images, and other formats are not allowed.');
-      return false;
-    }
+    // Validate .xlsx and .csv only
+    const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+    const isCsv = file.name.toLowerCase().endsWith('.csv');
 
-    if (!defaultCaseId) {
-      message.error("Upload folder not ready. Please try again.");
+    if (!isXlsx && !isCsv) {
+      message.error('Only .xlsx and .csv files are supported. PDFs, images, and other formats are not allowed.');
       return false;
     }
 
@@ -143,10 +84,9 @@ const HomePage = () => {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("created_at", new Date().toISOString());
 
       const response = await axios.post(
-        `${import.meta.env.VITE_API_BASE_URL}/cases/${defaultCaseId}/documents/`,
+        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/upload`,
         formData,
         {
           headers: {
@@ -158,9 +98,9 @@ const HomePage = () => {
 
       message.success(`${file.name} uploaded successfully!`);
 
-      // Refresh the uploads list
+      // Refresh the datasets list
       dataFetchedRef.current = false;
-      fetchUploads();
+      fetchDatasets();
     } catch (error) {
       console.error("Upload error:", error);
       const errorMsg = error.response?.data?.detail || "Failed to upload file";
@@ -172,16 +112,9 @@ const HomePage = () => {
     return false; // Prevent default upload behavior
   };
 
-  // Handle generate report
-  const handleGenerateReport = (upload) => {
-    // Set current case and navigate to content-bridge
-    setCurrentCase({
-      id: upload.caseId,
-      name: upload.caseName,
-      documents: [upload],
-    });
-
-    navigate("/content-bridge");
+  // Handle view dataset details
+  const handleViewDataset = (dataset) => {
+    navigate(`/dataset/${dataset.id}`);
   };
 
   // Format date
@@ -193,7 +126,7 @@ const HomePage = () => {
   const uploadProps = {
     name: "file",
     multiple: false,
-    accept: ".xlsx",
+    accept: ".xlsx,.csv",
     beforeUpload: handleUpload,
     showUploadList: false,
   };
@@ -202,9 +135,9 @@ const HomePage = () => {
     <div className="welcome-page-container">
       {/* Header Section */}
       <div style={{ marginBottom: "32px" }}>
-        <Title level={2}>Excel Report Generator</Title>
+        <Title level={2}>Anomaly Detection Dashboard</Title>
         <Paragraph type="secondary">
-          Upload .xlsx files and generate professional reports
+          Upload .xlsx or .csv datasets to detect anomalies and generate security triage reports
         </Paragraph>
       </div>
 
@@ -215,7 +148,7 @@ const HomePage = () => {
             title={
               <Flex align="center" gap="small">
                 <FileExcelOutlined style={{ color: themeToken.colorPrimary }} />
-                <Text strong>Create New Report</Text>
+                <Text strong>Upload New Dataset</Text>
               </Flex>
             }
             bordered={false}
@@ -226,13 +159,13 @@ const HomePage = () => {
                 <InboxOutlined style={{ color: themeToken.colorPrimary }} />
               </p>
               <p className="ant-upload-text">
-                Drag & drop your <strong>.xlsx</strong> file here
+                Drag & drop your <strong>.xlsx</strong> or <strong>.csv</strong> file here
               </p>
               <p className="ant-upload-hint">
                 or click to browse
               </p>
               <p className="ant-upload-hint" style={{ marginTop: "16px", color: themeToken.colorTextSecondary }}>
-                Only Excel .xlsx files are supported
+                Excel (.xlsx) and CSV (.csv) files supported
               </p>
             </Dragger>
 
@@ -244,13 +177,13 @@ const HomePage = () => {
           </Card>
         </Col>
 
-        {/* RIGHT COLUMN - Generate from Previous Uploads */}
+        {/* RIGHT COLUMN - Uploaded Datasets */}
         <Col xs={24} lg={12}>
           <Card
             title={
               <Flex align="center" gap="small">
                 <RocketOutlined style={{ color: themeToken.colorPrimary }} />
-                <Text strong>Generate Report From Uploaded Files</Text>
+                <Text strong>Uploaded Datasets</Text>
               </Flex>
             }
             bordered={false}
@@ -258,11 +191,11 @@ const HomePage = () => {
           >
             {loading ? (
               <Flex justify="center" align="center" style={{ minHeight: "200px" }}>
-                <Spin tip="Loading uploads..." />
+                <Spin tip="Loading datasets..." />
               </Flex>
-            ) : uploads.length === 0 ? (
+            ) : datasets.length === 0 ? (
               <Empty
-                description="No uploads yet"
+                description="No datasets yet"
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               >
                 <Text type="secondary">
@@ -271,17 +204,17 @@ const HomePage = () => {
               </Empty>
             ) : (
               <List
-                dataSource={uploads}
-                renderItem={(upload) => (
+                dataSource={datasets}
+                renderItem={(dataset) => (
                   <List.Item
-                    key={upload.id}
+                    key={dataset.id}
                     actions={[
                       <Button
                         type="primary"
                         icon={<RocketOutlined />}
-                        onClick={() => handleGenerateReport(upload)}
+                        onClick={() => handleViewDataset(dataset)}
                       >
-                        Generate
+                        {dataset.status === 'pending' ? 'Analyze' : 'View Details'}
                       </Button>,
                     ]}
                   >
@@ -293,15 +226,22 @@ const HomePage = () => {
                       }
                       title={
                         <Flex gap="small" wrap="wrap">
-                          <Text strong>{upload.name}</Text>
-                          <Tag color="blue">{upload.caseName}</Tag>
+                          <Text strong>{dataset.filename}</Text>
+                          <Tag color={dataset.status === 'completed' ? 'green' : dataset.status === 'processing' ? 'blue' : 'orange'}>
+                            {dataset.status}
+                          </Tag>
                         </Flex>
                       }
                       description={
                         <Flex vertical gap="4px">
                           <Text type="secondary" style={{ fontSize: "12px" }}>
-                            <ClockCircleOutlined /> {formatDate(upload.created_at)}
+                            <ClockCircleOutlined /> {formatDate(dataset.uploaded_at)}
                           </Text>
+                          {dataset.anomaly_count !== undefined && (
+                            <Text type="secondary" style={{ fontSize: "12px" }}>
+                              Anomalies detected: {dataset.anomaly_count}
+                            </Text>
+                          )}
                         </Flex>
                       }
                     />
@@ -322,7 +262,7 @@ const HomePage = () => {
         }}
       >
         <Typography.Text type="secondary">
-          STARAI - Excel Report Platform © {new Date().getFullYear()}
+          STARAI - Anomaly Detection Platform © {new Date().getFullYear()}
         </Typography.Text>
       </div>
     </div>

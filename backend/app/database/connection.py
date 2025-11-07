@@ -50,28 +50,20 @@ def users_collection():
     return get_db().users
 
 @property
-def docs_collection():
-    return get_db().documents
-
-@property 
-def chunks_collection():
-    return get_db().chunks
+def datasets_collection():
+    return get_db().datasets
 
 @property
-def cases_collection():
-    return get_db().cases
+def anomalies_collection():
+    return get_db().anomalies
 
 @property
-def reports_collection():
-    return get_db().reports
+def anomaly_reports_collection():
+    return get_db().anomaly_reports
 
 @property
-def report_progress_collection():
-    return get_db().report_progress
-
-@property
-def slides_collection():
-    return get_db().slides
+def analysis_sessions_collection():
+    return get_db().analysis_sessions
 
 # Create a module-level class to hold our lazy properties
 class DatabaseConnections:
@@ -88,29 +80,21 @@ class DatabaseConnections:
         return get_db().users
 
     @property
-    def docs_collection(self):
-        return get_db().documents
-
-    @property 
-    def chunks_collection(self):
-        return get_db().chunks
+    def datasets_collection(self):
+        return get_db().datasets
 
     @property
-    def cases_collection(self):
-        return get_db().cases
+    def anomalies_collection(self):
+        return get_db().anomalies
 
     @property
-    def reports_collection(self):
-        return get_db().reports
+    def anomaly_reports_collection(self):
+        return get_db().anomaly_reports
 
     @property
-    def report_progress_collection(self):
-        return get_db().report_progress
+    def analysis_sessions_collection(self):
+        return get_db().analysis_sessions
 
-    @property
-    def slides_collection(self):
-        return get_db().slides
-    
 # Create instance for module-level access
 _connections = DatabaseConnections()
 
@@ -118,12 +102,10 @@ _connections = DatabaseConnections()
 client = _connections.client
 db = _connections.db
 users_collection = _connections.users_collection
-docs_collection = _connections.docs_collection
-chunks_collection = _connections.chunks_collection
-cases_collection = _connections.cases_collection
-reports_collection = _connections.reports_collection
-report_progress_collection = _connections.report_progress_collection
-slides_collection = _connections.slides_collection
+datasets_collection = _connections.datasets_collection
+anomalies_collection = _connections.anomalies_collection
+anomaly_reports_collection = _connections.anomaly_reports_collection
+analysis_sessions_collection = _connections.analysis_sessions_collection
 
 def reset_database():
     """Drop all collections and reset the database"""
@@ -149,16 +131,14 @@ def reset_database():
 
 def create_indexes():
     """Create database indexes if they don't already exist"""
-    
+
     # Get collections with lazy initialization
     db_instance = get_db()
     users_coll = _connections.users_collection
-    docs_coll = _connections.docs_collection  
-    chunks_coll = _connections.chunks_collection
-    cases_coll = _connections.cases_collection
-    reports_coll = _connections.reports_collection
-    report_progress_coll = _connections.report_progress_collection
-    slides_coll = _connections.slides_collection
+    datasets_coll = _connections.datasets_collection
+    anomalies_coll = _connections.anomalies_collection
+    anomaly_reports_coll = _connections.anomaly_reports_collection
+    sessions_coll = _connections.analysis_sessions_collection
 
     def index_exists(collection, index_name):
         """Check if an index already exists on a collection"""
@@ -168,13 +148,13 @@ def create_indexes():
         except Exception as e:
             print(f"Error checking if index exists: {str(e)}")
             return False
-    
+
     def create_index_if_not_exists(collection, keys, index_name=None, **kwargs):
         """Create an index if it doesn't already exist"""
         if index_name and index_exists(collection, index_name):
             print(f"Index '{index_name}' already exists on collection {collection.name}")
             return
-            
+
         # For compound indexes without explicit name
         if not index_name and isinstance(keys, list):
             # Generate a name for compound indexes to check
@@ -183,49 +163,54 @@ def create_indexes():
             if index_exists(collection, generated_name):
                 print(f"Compound index '{generated_name}' already exists on collection {collection.name}")
                 return
-        
+
         try:
             collection.create_index(keys, name=index_name, **kwargs)
             print(f"Created index {index_name or keys} on collection {collection.name}")
         except Exception as e:
             print(f"Error creating index {index_name or keys} on collection {collection.name}: {str(e)}")
-    
-    # Common indexes for both environments
-    create_index_if_not_exists(cases_coll, "name", "name_1", unique=True)
-    create_index_if_not_exists(docs_coll, [("case_id", 1), ("name", 1)], "case_id_1_name_1", unique=True)
-    create_index_if_not_exists(chunks_coll, [("doc_id", 1), ("index", 1)], "doc_id_1_index_1", unique=True)
 
-    # User management indexes
+    # ============= USER MANAGEMENT INDEXES =============
     create_index_if_not_exists(users_coll, "username", "username_1", unique=True)
     create_index_if_not_exists(users_coll, "email", "email_1", unique=True)
-    
-    # Case index by user_id for quick filtering
-    create_index_if_not_exists(cases_coll, "user_id", "user_id_1")
-    
-    # Case study indexes
-    create_index_if_not_exists(reports_coll, "user_id", "user_id_1")
-    create_index_if_not_exists(reports_coll, "case_id", "case_id_1")
-    create_index_if_not_exists(reports_coll, "created_at", "created_at_1")
-    create_index_if_not_exists(reports_coll, "status", "status_1")
-    create_index_if_not_exists(reports_coll, "title", "title_1")
-    
-    # Case study progress indexes
-    create_index_if_not_exists(report_progress_coll, "report_id", "report_id_1", unique=True)
-    create_index_if_not_exists(report_progress_coll, "user_id", "user_id_1")
-    create_index_if_not_exists(report_progress_coll, "status", "status_1")
-    create_index_if_not_exists(report_progress_coll, "created_at", "created_at_1")
-    
-    # Slides collection indexes
-    create_index_if_not_exists(slides_coll, "user_id", "user_id_1")
-    create_index_if_not_exists(slides_coll, "created_at", "created_at_1")
-    
+
+    # ============= ANOMALY DETECTION INDEXES =============
+
+    # Dataset indexes
+    create_index_if_not_exists(datasets_coll, "user_id", "user_id_1")
+    create_index_if_not_exists(datasets_coll, "status", "status_1")
+    create_index_if_not_exists(datasets_coll, "uploaded_at", "uploaded_at_1")
+    create_index_if_not_exists(datasets_coll, [("user_id", 1), ("filename", 1)], "user_id_1_filename_1")
+
+    # Anomalies indexes
+    create_index_if_not_exists(anomalies_coll, "dataset_id", "dataset_id_1")
+    create_index_if_not_exists(anomalies_coll, "user_id", "user_id_1")
+    create_index_if_not_exists(anomalies_coll, "status", "status_1")
+    create_index_if_not_exists(anomalies_coll, "anomaly_score", "anomaly_score_1")
+    create_index_if_not_exists(anomalies_coll, "detected_at", "detected_at_1")
+    create_index_if_not_exists(anomalies_coll, [("dataset_id", 1), ("row_index", 1)], "dataset_id_1_row_index_1")
+
+    # Anomaly reports indexes
+    create_index_if_not_exists(anomaly_reports_coll, "user_id", "user_id_1")
+    create_index_if_not_exists(anomaly_reports_coll, "dataset_id", "dataset_id_1")
+    create_index_if_not_exists(anomaly_reports_coll, "anomaly_id", "anomaly_id_1", unique=True)
+    create_index_if_not_exists(anomaly_reports_coll, "status", "status_1")
+    create_index_if_not_exists(anomaly_reports_coll, "created_at", "created_at_1")
+    create_index_if_not_exists(anomaly_reports_coll, [("user_id", 1), ("status", 1)], "user_id_1_status_1")
+
+    # Analysis sessions indexes
+    create_index_if_not_exists(sessions_coll, "user_id", "user_id_1")
+    create_index_if_not_exists(sessions_coll, "dataset_id", "dataset_id_1", unique=True)
+    create_index_if_not_exists(sessions_coll, "status", "status_1")
+    create_index_if_not_exists(sessions_coll, "started_at", "started_at_1")
+
     # Create admin user in development environment
     if ENV == "development" or ENV is None:
         from app.core.auth import get_password_hash
-        
+
         # Check if admin user already exists
         existing_admin = users_coll.find_one({"username": "admin"})
-        
+
         if not existing_admin:
             # Create admin user
             admin_user = {
@@ -235,83 +220,11 @@ def create_indexes():
                 "hashed_password": get_password_hash("password123"),
                 "is_admin": True
             }
-            
+
             try:
                 users_coll.insert_one(admin_user)
                 print("Development admin user created successfully")
             except Exception as e:
                 print(f"Warning: Failed to create admin user: {e}")
 
-    # -- Vector index logic --
-    EMBEDDING_MODEL_DIMS = 1024  # DocumentDB max allowed dimension
-    
-    # Vector index with environment-specific implementation
-    time.sleep(5)
-    if ENV == "production" or ENV == "test":
-        # DocumentDB vector index
-        vector_index_name = "my_vss_index"
-        if not index_exists(chunks_coll, vector_index_name):
-            try:
-                chunks_coll.create_index(
-                    [("embedding", "vector")],
-                    name=vector_index_name,
-                    vectorOptions={
-                        "type": "hnsw",
-                        "dimensions": EMBEDDING_MODEL_DIMS,
-                        "similarity": "cosine",
-                        "m": 16,
-                        'efConstruction': 64
-                    }
-                )
-                print(f"Created vector index '{vector_index_name}' on chunks collection")
-            except Exception as e:
-                print(f"Error creating vector index: {str(e)}")
-        else:
-            print(f"Vector index '{vector_index_name}' already exists on chunks collection")
-    else:
-        # MongoDB Atlas Local vector index
-        try:
-            vector_index_name = "my_vss_index"
-            # Check if the vector search index already exists
-            existing_indices = list(chunks_coll.list_search_indexes())
-            existing_index_names = [idx.get('name') for idx in existing_indices]
-            
-            if vector_index_name not in existing_index_names:
-                # Create search index model for vector search
-                search_index_model = SearchIndexModel(
-                    definition={
-                        "fields": [
-                            {
-                                "type": "vector",
-                                "path": "embedding",
-                                "numDimensions": EMBEDDING_MODEL_DIMS,
-                                "similarity": "cosine",
-                                "quantization": "scalar"
-                            }
-                        ]
-                    },
-                    name=vector_index_name,
-                    type="vectorSearch"
-                )
-                
-                result = chunks_coll.create_search_index(model=search_index_model)
-                
-                print(f"New search index named {result} is building.")
-                
-                # Wait for initial sync to complete
-                print("Polling to check if the index is ready. This may take up to a minute.")
-                predicate = lambda index: index.get("queryable") is True
-                
-                while True:
-                    indices = list(chunks_coll.list_search_indexes(result))
-                    if len(indices) and predicate(indices[0]):
-                        break
-                    time.sleep(5)
-                    
-                print(f"Index {result} is ready for querying.")
-            else:
-                print(f"Vector search index '{vector_index_name}' already exists on chunks collection")
-            
-        except Exception as e:
-            print(f"Warning: Vector index creation failed in development environment: {e}")
-            print("Vector search might not be available in development mode.")
+    print("All anomaly detection indexes created successfully.")

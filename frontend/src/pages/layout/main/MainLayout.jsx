@@ -3,11 +3,11 @@ import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { Layout, Button, Typography, theme, Flex } from "antd";
 import { MenuFoldOutlined, MenuUnfoldOutlined } from "@ant-design/icons";
 
-import axios from "axios";
 import useStore from "../../../store";
 import "./MainLayout.css";
 
 import HomePage from "../../HomePage/HomePage";
+import DatasetDetailPage from "../../DatasetDetail";
 import RootPage from "../RootPage";
 import AdminDashboardPage from "../../AdminDashboard/AdminDashboardPage";
 import TemplatePage from "../../MyTemplates";
@@ -59,17 +59,10 @@ const MainLayout = ({ onLogout, isDarkMode, setIsDarkMode }) => {
 
   const fetchCurrentlyProcessingContent = useCallback(async () => {
     try {
-      const response = await axios.get(
-        `${import.meta.env.VITE_API_BASE_URL}/reports/progress/active`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      setProcessingContent((prev) =>
-        // eslint-disable-next-line
-        JSON.stringify(response.data) != JSON.stringify(prev)
-          ? response.data
-          : prev
-      );
+      // TODO: Implement progress tracking for anomaly detection
+      // When implementing, use: /api/anomaly/analysis-sessions?status=processing
+      // For now, we'll keep this empty to avoid 404 errors
+      setProcessingContent([]);
     } catch (err) {
       console.error(err);
     }
@@ -178,6 +171,7 @@ const MainLayout = ({ onLogout, isDarkMode, setIsDarkMode }) => {
         >
           <Routes>
             <Route path="/" element={<HomePage />} />
+            <Route path="/dataset/:datasetId" element={<DatasetDetailPage />} />
             {user?.is_admin &&
               (projectVariant === "custom" ||
                 projectVariant === "report") && (

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Large data files (don't push to GitHub)
+*.npy
+*.h5
+*.pkl
+
+# Large CSV outputs (regenerate from code)
+new_test_results.csv
+detected_anomalies.csv
+full_results.csv
+critical_anomalies_top100.csv
+top_100_critical.csv
+
+# Generated plots in root (keep visuals/ folder)
+confusion_matrix.png
+executive_dashboard.png
+priority_distribution.png
+roc_curve.png
+reconstruction_error_dist.png
+threshold_optimization.png
+training_history.png
+
+# Keep visualizations in visuals/ folder
+!visuals/*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

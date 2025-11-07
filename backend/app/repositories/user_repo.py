@@ -3,12 +3,11 @@ from fastapi.security import OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
 from typing import List, Optional
 from app.models.models import User, UserCreate, UserInDB, Token
-from app.repositories.report_template_repo import template_repository
 from app.database.connection import db, users_collection
 from app.core.auth import (
-    authenticate_user, 
-    create_access_token, 
-    get_password_hash, 
+    authenticate_user,
+    create_access_token,
+    get_password_hash,
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
 from bson import ObjectId
@@ -132,11 +131,10 @@ def update_user(user_id: str, user_data: dict):
 
 async def delete_user(user_id_to_delete: str, current_admin_id: str):
     """
-    Deletes a user and all their associated data using a single database transaction.
-    This version calls internal helper functions in other repos to avoid modifying public-facing methods.
+    Deletes a user and all their associated anomaly detection data.
     """
-    from app.repositories import case_repo, report_repo
-    from app.repositories.report_template_repo import template_repository
+    from app.repositories import anomaly_repo
+
     if user_id_to_delete == current_admin_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -152,14 +150,21 @@ async def delete_user(user_id_to_delete: str, current_admin_id: str):
     with db.client.start_session() as session:
         with session.start_transaction():
             try:
-                # Call internal delete functions, passing the session
-                await case_repo._delete_all_user_data(user_obj_id, session=session)
-                await report_repo._delete_all_user_reports(user_obj_id, session=session)
-                template_repository.delete_user_templates(user_obj_id)
-                
+                # Delete all datasets for this user (cascades to anomalies/reports)
+                datasets = db.datasets.find({"user_id": str(user_obj_id)}, session=session)
+                for dataset in datasets:
+                    dataset_id = str(dataset["_id"])
+                    # Delete associated anomalies, reports, and sessions
+                    db.anomalies.delete_many({"dataset_id": dataset_id}, session=session)
+                    db.anomaly_reports.delete_many({"dataset_id": dataset_id}, session=session)
+                    db.analysis_sessions.delete_many({"dataset_id": dataset_id}, session=session)
+
+                # Delete all datasets
+                db.datasets.delete_many({"user_id": str(user_obj_id)}, session=session)
+
                 # Finally, delete the user document itself
                 result = users_collection.delete_one({"_id": user_obj_id}, session=session)
-                
+
                 if result.deleted_count == 0:
                     raise HTTPException(status_code=404, detail="User not found during transaction, rolling back.")
 
@@ -167,22 +172,24 @@ async def delete_user(user_id_to_delete: str, current_admin_id: str):
                 # The transaction will be aborted automatically on an exception
                 print(f"Transaction aborted: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to delete user and associated data: {e}")
-    
+
     return {"detail": "User and all associated data deleted successfully"}
 
 def mass_create_users(emails: List[str], template_ids: List[str], current_admin_id: str) -> List[List[str]]:
     """
-    Create multiple users from email list and assign templates using sharecodes.
+    Create multiple users from email list.
     Returns a list of lists for CSV response format.
+
+    Note: Template assignment removed (old case study system).
     """
-    logger.info(f"Starting mass user creation for {len(emails)} emails and {len(template_ids)} sharecodes")
-    
+    logger.info(f"Starting mass user creation for {len(emails)} emails")
+
     user_list = []
     response_list = []
-    
+
     # Add header row
     response_list.append(["email", "username", "password"])
-    
+
     # Create users from email list
     for i, email in enumerate(emails):
         try:
@@ -191,19 +198,19 @@ def mass_create_users(emails: List[str], template_ids: List[str], current_admin_
             object_id_str = str(ObjectId())
             password_hash = hashlib.sha256(object_id_str.encode()).hexdigest()
             password = password_hash[:8]
-            
+
             user_create = UserCreate(
                 email=email,
                 username=username,
                 password=password,
             )
-            
+
             created_user = create_user(user_create, is_mass_create=True)
             response_list.append([email, username, password])
             user_list.append(created_user)
-            
+
             logger.debug(f"Successfully created user: {email}")
-            
+
         except HTTPException as e:
             error_msg = f"Failed to create user for {email}: {str(e.detail)}"
             logger.warning(error_msg)
@@ -214,34 +221,9 @@ def mass_create_users(emails: List[str], template_ids: List[str], current_admin_
             logger.error(error_msg)
             response_list.append([error_msg])
             continue
-    
+
     logger.info(f"User creation completed. Created {len(user_list)} out of {len(emails)} users")
-    
-    # Add template assignment section
-    response_list.append(["template status"])
 
-    # Assign templates using template_ids
-    for i, template_id in enumerate(template_ids):
-        try:
-            logger.debug(f"Assigning template {i+1}/{len(template_ids)}: {template_id}")
-            sharecode = template_repository.share_template(current_admin_id, template_id)
-
-            # Only assign to successfully created users
-            if user_list:
-                response = template_repository.assign_template_to_users(sharecode, user_list)
-                response_list.append([f"Template {sharecode}: {response}"])
-                logger.debug(f"Template assignment result: {response}")
-            else:
-                response_list.append([f"Template {sharecode}: No users created to assign template"])
-                logger.warning(f"No users available for template assignment: {sharecode}")
-                
-        except Exception as e:
-            error_msg = f"Failed to assign template {sharecode}: {str(e)}"
-            logger.error(error_msg)
-            response_list.append([error_msg])
-            continue
-    
-    logger.info(f"Mass user creation and template assignment completed. Response has {len(response_list)} rows")
     return response_list
 
 def update_user_password(user_id: str,new_password: str, confirm_password: str):

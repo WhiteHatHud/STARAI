@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from app.routes import case_routes, document_routes, user_routes, chunk_routes, report_routes, template_routes, slide_routes
+from app.routes import user_routes, anomaly_routes
 from app.database.connection import create_indexes, reset_database
 
 # Initialize FastAPI app
@@ -60,13 +60,8 @@ app.include_router(user_routes.router, prefix="/api/auth", tags=["Authentication
 # Admin User Management Routes
 app.include_router(user_routes.admin_router, prefix="/api", tags=["Admin"])
 
-# Other Application Routes
-app.include_router(case_routes.router, prefix="/api/cases")
-app.include_router(document_routes.router, prefix="/api/cases/{case_id}/documents")  # Nested document routes under a case
-app.include_router(template_routes.router, prefix="/api/custom/documents")  # Custom document routes
-app.include_router(chunk_routes.router, prefix="/api/cases/{case_id}/documents/{doc_id}")
-app.include_router(report_routes.router, prefix="/api/reports", tags=["Reports"])
-app.include_router(slide_routes.router, prefix="/api/slides", tags=["Slides"])
+# Anomaly Detection Routes (Main System)
+app.include_router(anomaly_routes.router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 
 if APP_ENV == "production" or APP_ENV == "test":
     # Serve React static files
