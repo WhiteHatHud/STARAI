@@ -1,14 +1,13 @@
 import logging
 from typing import Dict, Any, Optional
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-import yaml
-from app.utils.read_prompt import ReadPrompt
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from .base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
 
 
-class HuggingFaceProvider:
+class HuggingFaceProvider(BaseProvider):
     """HuggingFace transformers provider."""
     
     def __init__(self, model: str, config: Dict[str, Any], system_prompt: str = "You are a helpful AI assistant."):
@@ -20,34 +19,23 @@ class HuggingFaceProvider:
             config: Configuration from models.json
             system_prompt: System prompt from prompt.yaml
         """
-        self.model= self._load_model(model)
-        self.config = config
-        self.system_prompt = ReadPrompt.get_system_prompt() or system_prompt
+        super().__init__(model, config, system_prompt)
+        
         self.device = self._resolve_device("auto")
+        
         logger.info(f"Loading HuggingFace model: {model} on {self.device}")
         
         self.tokenizer = AutoTokenizer.from_pretrained(model)
-        self.has_system_prompt = self.config.get("system_prompt", False)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model,
+            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            device_map="auto" if self.device == "cuda" else None
+        )
+        
+        if self.device != "cuda":
+            self.model = self.model.to(self.device)
         
         logger.info(f"Initialized HuggingFace provider for model: {model}")
-
-    def _load_model(self, model_name):
-        # bnb_config = BitsAndBytesConfig(
-        #     load_in_4bit=True,
-        #     bnb_4bit_compute_dtype=torch.bfloat16,
-        #     bnb_4bit_use_double_quant=True,
-        #     bnb_4bit_quant_type="nf4",
-        # )
-
-        model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map="auto",
-                # quantization_config=bnb_config,
-                trust_remote_code=True,
-                dtype=torch.bfloat16,
-            )
-        
-        return model.to(self.device)
     
     def _resolve_device(self, device: str) -> str:
         """Resolve device string to actual device."""
@@ -71,7 +59,6 @@ class HuggingFaceProvider:
         Returns:
             Generated text
         """
-
         if self.has_system_prompt:
             system_msg = system or self.system_prompt
             messages = [
@@ -89,14 +76,15 @@ class HuggingFaceProvider:
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
 
         generation_args = {
-            "max_new_tokens": kwargs.get("max_new_tokens", 1024),
-            "temperature": kwargs.get("temperature", None),
-            "repetition_penalty": kwargs.get("repetition_penalty", 1.2),
-            "do_sample": kwargs.get("do_sample", False),
+            "max_new_tokens": kwargs.get("max_new_tokens", 512),
+            "temperature": kwargs.get("temperature", 0.7),
+            "repetition_penalty": kwargs.get("repetition_penalty", 1.1),
+            "do_sample": kwargs.get("do_sample", True),
+            "top_p": kwargs.get("top_p", 0.95),
             "use_cache": True,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "pad_token_id": self.tokenizer.pad_token_id,
         }
+        
+        generation_args = {k: v for k, v in generation_args.items() if v is not None}
 
         with torch.inference_mode():
             output = self.model.generate(**inputs, **generation_args)
