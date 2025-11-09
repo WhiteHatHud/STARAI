@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 from typing import Optional, List, Dict, Any
-from app.repositories import AgentRepository
+from app.repositories.agent_repo import AgentRepository
 import logging
 from app.models.agent_schema import ModelCreate, ModelInfo, ModelUpdate, AgentRunRequest, AgentRunResponse
 from app.agent.base_agent import BaseAgent
@@ -68,7 +68,7 @@ async def run_agent(request: AgentRunRequest):
         )
 
 
-@router.get("/models", response_model=List[str])
+@router.get("/", response_model=List[str])
 async def list_models():
     """Get list of all available models."""
     try:
@@ -122,7 +122,7 @@ async def update_model(model_id: str, model: ModelUpdate):
         repo = AgentRepository()
         
         # Build update dict
-        update_data = model.dict(exclude_none=True)
+        update_data = model.model_dump(exclude_none=True)
         
         repo.update_model(model_id=model_id, **update_data)
         
@@ -160,7 +160,7 @@ async def delete_model(model_id: str):
             detail=str(e)
         )
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("/add", status_code=status.HTTP_201_CREATED)
 async def create_model(model: ModelCreate):
     """Add a new model configuration."""
     try:

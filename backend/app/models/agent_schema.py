@@ -18,6 +18,7 @@ class ModelUpdate(BaseModel):
     """Schema for updating a model."""
     provider: Optional[str] = None
     system_prompt: Optional[bool] = None
+    base_url: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(None, gt=0)
 
@@ -34,7 +35,7 @@ class AgentRunRequest(BaseModel):
     """Schema for agent run request."""
     model_id: str = Field(..., description="Model identifier to use")
     prompt: str = Field(..., description="User prompt/question")
-    system: Optional[str] = Field(None, description="Optional system prompt override")
+    system_prompt: Optional[str] = Field(None, description="Optional system prompt override")
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature setting")
     max_tokens: Optional[int] = Field(None, gt=0, description="Maximum tokens to generate")
     max_new_tokens: Optional[int] = Field(None, gt=0, description="Maximum new tokens (HuggingFace)")

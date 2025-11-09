@@ -1,7 +1,5 @@
 from typing import Type, Optional
-from app.agent.providers.base_provider import BaseProvider
-from app.agent.providers.langchain_provider import LangChainProvider
-from app.agent.providers.huggingface_provider import HuggingFaceProvider
+from app.agent.providers import BaseProvider, LangChainProvider, HuggingFaceProvider
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,8 +12,8 @@ class ProviderRepository:
     PROVIDER_REGISTRY: dict[str, Type[BaseProvider]] = {
         "huggingface": HuggingFaceProvider,
         "gemini": LangChainProvider,
-        "openai": LangChainProvider,
-        "anthropic": LangChainProvider,
+        # "openai": LangChainProvider,
+        # "anthropic": LangChainProvider,
     }
     
     def get_provider_class(self, provider_name: str) -> Optional[Type[BaseProvider]]:

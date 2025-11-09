@@ -1,7 +1,7 @@
 from typing import Any, Optional
 import logging
-from app.repositories import AgentRepository, ProviderRepository
-import yaml
+from app.repositories.agent_repo import AgentRepository
+from app.repositories.provider_repo import ProviderRepository
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,18 @@ class BaseAgent:
         self.provider = ProviderRepository()
         self.model = model
         self._provider_instance = None
+        self.system_prompt = self._load_system_prompt()
+
+    def _load_system_prompt(self) -> str:
+        """Load system prompt from prompt.yaml."""
+        try:
+            import yaml
+            with open("app/agent/prompt.yaml", "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                return data.get("system_prompt", "You are a helpful AI assistant.")
+        except Exception as e:
+            logger.warning(f"Could not load system prompt: {e}")
+            return "You are a helpful AI assistant."
 
     def _get_provider(self) -> Any:
         if self._provider_instance is None:
@@ -25,12 +37,15 @@ class BaseAgent:
             if not provider_class:
                 raise ValueError(f"Provider '{provider_name}' not found.")
             
+            # Pass system_prompt to provider
             self._provider_instance = provider_class(
                 model=self.model,
-                config=agent_config
+                config=agent_config,
+                system_prompt=self.system_prompt
             )
             
-        logger.info(f"Initialized {provider_name} provider for model '{self.model}'")
+            logger.info(f"Initialized {provider_name} provider for model '{self.model}'")
+        
         return self._provider_instance
 
     def run(self, prompt: str, **kwargs) -> str:

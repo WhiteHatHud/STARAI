@@ -65,7 +65,7 @@ class ProviderUtils:
         api_key_param = provider_info["api_key_param"]
         params = {
             "model": None,  # To be set by caller
-            api_key_param: api_key,  # Fixed: Use correct parameter name
+            api_key_param: api_key, 
             "temperature": 0.7,
         }
         
