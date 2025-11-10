@@ -1,125 +1,20 @@
 import os
 import json
 from datetime import datetime
-
 import pandas as pd
-from dotenv import load_dotenv
-from openai import AzureOpenAI
-
-load_dotenv()
-
-ENDPOINT = os.environ["AZURE_OPENAI_ENDPOINT"]
-API_KEY = os.environ["AZURE_OPENAI_API_KEY"]
-DEPLOYMENT = os.environ["AZURE_OPENAI_DEPLOYMENT"]
-API_VERSION = os.environ["AZURE_OPENAI_API_VERSION"]
-
-client = AzureOpenAI(
-    api_version=API_VERSION,
-    azure_endpoint=ENDPOINT,
-    api_key=API_KEY,
-)
+from app.agent.base_agent import BaseAgent
+from app.repositories.agent_repo import AgentRepository
 
 INPUT_CSV = "BETH_anomaly.csv"                # your anomalies file (TSV or CSV)
 OUTPUT_JSONL = "BETH_llm_explanations.jsonl"  # only JSON explanations
 MAX_ROWS = 200                                # safety limit
-
-
-SYSTEM_PROMPT = """
-You are a senior SOC analyst and assistant for an automated anomaly triage pipeline.
-
-You receive:
-- A single security anomaly event derived from the BETH dataset or similar telemetry.
-- Minimal metadata: dataset_id, anomaly_id, session_id, row_index, timestamps, and model scores.
-
-Your task:
-Return ONE JSON object that conforms EXACTLY to the following schema:
-
-{
-  "schema_version": "1.0",
-  "dataset_id": "<string>",
-  "anomaly_id": "<string>",
-  "session_id": "<string or null>",
-  "verdict": "suspicious" | "likely_malicious" | "unclear",
-  "severity": "low" | "medium" | "high" | "critical",
-  "confidence_label": "low" | "medium" | "high",
-  "confidence_score": <float between 0 and 1>,
-  "mitre": [
-    {"id": "<TACTIC/TECHNIQUE ID>", "name": "<name>", "confidence": <0-1>, "rationale": "<optional string>"}
-  ],
-  "actors": {
-    "user_id": "<string or null>",
-    "username": "<string or null>",
-    "process_name": "<string or null>",
-    "pid": <int or null>,
-    "ppid": <int or null>
-  },
-  "host": {
-    "hostname": "<string or null>",
-    "mount_ns": "<string or null>"
-  },
-  "event": {
-    "name": "<eventName or similar>",
-    "timestamp": "<ISO-8601 or null>",
-    "args": [
-      {"name": "<arg_name>", "type": "<arg_type>", "value": "<stringified_value>"}
-    ]
-  },
-  "features": [
-    {"name": "<feature_name>", "value": <float>, "z": <float or null>}
-  ],
-  "evidence_refs": [
-    {
-      "type": "row",
-      "row_index": <int or null>,
-      "sheet": "<string or null>",
-      "s3_key": "<string or null>"
-    }
-  ],
-  "key_indicators": [
-    "<short bullet referencing specific fields and why they are suspicious>"
-  ],
-  "triage": {
-    "immediate_actions": ["<short actionable step>", "..."],
-    "short_term": ["<playbook / follow-up>", "..."],
-    "long_term": ["<hardening / strategic>", "..."]
-  },
-  "notes": "<2-4 sentences summarizing reasoning and uncertainties>",
-  "status": "new",
-  "owner": null,
-  "provenance": {
-    "model_name": "gpt-5-mini",
-    "model_version": "base",
-    "prompt_id": "beth-triage-v1",
-    "temperature": 0.2,
-    "tokens_prompt": null,
-    "tokens_output": null,
-    "latency_ms": null
-  },
-  "_created_at": "<ISO-8601 UTC timestamp for when this explanation is generated>",
-  "hash": null
-}
-
-Rules:
-- Use ONLY valid JSON. No comments, no trailing commas, no markdown.
-- Fill fields using ONLY provided event data and reasonable security judgement.
-- Do NOT fabricate usernames or paths that conflict with given data.
-- If a field cannot be inferred, set it to null or a safe default (e.g. [], null).
-- "mitre" entries must be plausible and tied to evidence in key_indicators/notes.
-- "severity" should reflect potential impact given the event context and verdict.
-- "confidence_score" must be consistent with "confidence_label".
-- "key_indicators" must reference concrete fields (e.g. processName, args, userId).
-- "triage" actions must be defensive and realistic.
-- Do NOT include exploit instructions or offensive guidance.
-- Output exactly ONE JSON object per request.
-"""
-
-
+MODEL_ID = "gpt-5-mini"
 
 def load_beth_csv(path: str) -> pd.DataFrame:
+    """Load BETH anomaly CSV/TSV file."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"Input CSV not found: {path}")
 
-    # Try comma-separated
     try:
         df = pd.read_csv(path)
     except pd.errors.EmptyDataError:
@@ -127,7 +22,7 @@ def load_beth_csv(path: str) -> pd.DataFrame:
     except pd.errors.ParserError:
         df = pd.read_csv(path, engine="python", on_bad_lines="skip")
 
-    # Detect TSV case (one column with tabs inside)
+    # Detect TSV format
     if df.shape[1] == 1 and df.iloc[0, 0] and "\t" in str(df.iloc[0, 0]):
         df = pd.read_csv(path, sep="\t")
 
@@ -137,22 +32,11 @@ def load_beth_csv(path: str) -> pd.DataFrame:
 
 
 def summarize_beth_row(row: pd.Series) -> str:
-    """Compact textual summary for the LLM."""
+    """Create compact textual summary for the LLM."""
     candidate_fields = [
-        "timestamp",
-        "hostName",
-        "userId",
-        "processId",
-        "parentPro",
-        "mountNamespace",
-        "processName",
-        "eventId",
-        "eventName",
-        "args",
-        "sus",
-        "evil",
-        "anomaly",
-        "label",
+        "timestamp", "hostName", "userId", "processId", "parentPro",
+        "mountNamespace", "processName", "eventId", "eventName", "args",
+        "sus", "evil", "anomaly", "label"
     ]
 
     parts = []
@@ -166,78 +50,108 @@ def summarize_beth_row(row: pd.Series) -> str:
     return ", ".join(parts)
 
 
-def extract_text_from_message(message) -> str:
-    """Handle both string and list-style message.content formats."""
-    content = message.content
-
-    if isinstance(content, list):
-        pieces = []
-        for c in content:
-            text = getattr(c, "text", None)
-            if text is None and isinstance(c, dict):
-                text = c.get("text")
-            if hasattr(text, "value"):
-                text = text.value
-            if text:
-                pieces.append(str(text))
-        return "".join(pieces).strip()
-
-    if content is not None:
-        return str(content).strip()
-
-    return ""
+def parse_json_response(text: str) -> dict:
+    """Parse JSON from LLM response, handling markdown code blocks."""
+    text = text.strip()
+    
+    # Remove markdown code blocks
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    
+    if text.endswith("```"):
+        text = text[:-3]
+    
+    text = text.strip()
+    return json.loads(text)
 
 
-def explain_beth_anomaly(row: pd.Series) -> dict:
+def explain_beth_anomaly(agent: BaseAgent, row: pd.Series, row_index: int) -> dict:
     """
-    Call GPT-5-mini to explain an anomaly.
-    Returns a Python dict with the JSON explanation.
+    Use BaseAgent to explain an anomaly.
+    
+    Args:
+        agent: Initialized BaseAgent instance
+        row: Pandas Series containing anomaly data
+        row_index: Original row index from DataFrame
+        
+    Returns:
+        Dictionary containing structured JSON explanation
     """
     summary = summarize_beth_row(row)
 
-    user_content = f"""
+    user_prompt = f"""
 This event was flagged as anomalous by an upstream detector:
 
-{summary}
+Row Index: {row_index}
+Event Data: {summary}
 
 Return ONLY the JSON object as specified. No extra text.
 """
 
-    resp = client.chat.completions.create(
-        model=DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-    )
-
-    message = resp.choices[0].message
-    text = extract_text_from_message(message)
-
-    # Try to parse JSON, fall back to wrapping raw text
     try:
-        data = json.loads(text)
-        # Add timestamp for traceability
+        # Call BaseAgent with system prompt and low temperature
+        response = agent.run(
+            prompt=user_prompt,
+            system=SYSTEM_PROMPT,
+            temperature=0.2
+        )
+
+        # Parse JSON response
+        data = parse_json_response(response)
+        
+        # Add metadata
         data["_llm_timestamp_utc"] = datetime.now().astimezone().isoformat()
+        data["_row_index"] = row_index
+        
+        # Ensure provenance is populated
+        if "provenance" not in data:
+            data["provenance"] = {}
+        
+        data["provenance"].update({
+            "model_name": MODEL_ID,
+            "temperature": 0.2,
+        })
+        
         return data
-    except Exception:
-        # If it's not valid JSON, keep it so you can debug later
+
+    except json.JSONDecodeError as e:
+        print(f"[WARN] Row {row_index}: JSON decode error: {e}")
         return {
             "verdict": "unclear",
-            "confidence": "low",
-            "mitre_techniques": [],
+            "confidence_label": "low",
+            "confidence_score": 0.1,
+            "mitre": [],
             "key_indicators": [],
-            "notes": "LLM response was not valid JSON; raw text captured.",
-            "raw_response": text,
+            "notes": f"LLM response was not valid JSON. Parse error: {e}",
+            "raw_response": response[:500] if 'response' in locals() else "",
             "_llm_timestamp_utc": datetime.now().astimezone().isoformat(),
+            "_row_index": row_index,
+            "_error": "json_decode_error"
+        }
+    
+    except Exception as e:
+        print(f"[ERROR] Row {row_index}: {e}")
+        return {
+            "verdict": "unclear",
+            "confidence_label": "low",
+            "confidence_score": 0.1,
+            "mitre": [],
+            "key_indicators": [],
+            "notes": f"Error calling LLM: {e}",
+            "_llm_timestamp_utc": datetime.now().astimezone().isoformat(),
+            "_row_index": row_index,
+            "_error": str(e)
         }
 
 
 def select_anomalies(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Decide which rows to treat as anomalies.
-    - If sus/evil/anomaly flags exist, use them.
-    - Otherwise, treat all rows as anomalies.
+    Filter rows that are flagged as anomalies.
+    
+    If sus/evil/anomaly columns exist, use them.
+    Otherwise, treat all rows as anomalies.
     """
     has_flags = any(col in df.columns for col in ["sus", "evil", "anomaly"])
 
@@ -245,7 +159,8 @@ def select_anomalies(df: pd.DataFrame) -> pd.DataFrame:
         print("[INFO] No sus/evil/anomaly columns found; treating ALL rows as anomalies.")
         return df
 
-    mask = False
+    mask = pd.Series([False] * len(df))
+    
     if "sus" in df.columns:
         mask = mask | (df["sus"] == 1)
     if "evil" in df.columns:
@@ -254,46 +169,87 @@ def select_anomalies(df: pd.DataFrame) -> pd.DataFrame:
         mask = mask | (df["anomaly"] == 1)
 
     anomalies = df[mask].copy()
-    print(f"[INFO] Found {anomalies.shape[0]} anomalies using sus/evil/anomaly flags.")
+    print(f"[INFO] Found {len(anomalies)} anomalies using sus/evil/anomaly flags.")
     return anomalies
 
 
 def main():
-    print(f"[INFO] Loading BETH data from {INPUT_CSV}")
-    df = load_beth_csv(INPUT_CSV)
+    """Main execution function."""
+    print(f"[INFO] Initializing BaseAgent with model: {MODEL_ID}")
+    
+    try:
+        agent = BaseAgent(model_id=MODEL_ID)
+        print(f"[INFO] Successfully initialized {MODEL_ID}")
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize BaseAgent: {e}")
+        print("\n[INFO] Available models:")
+        try:
+            from app.repositories import AgentRepository
+            repo = AgentRepository()
+            for model in repo.list_models():
+                print(f"  - {model}")
+        except Exception:
+            pass
+        return
+
+    print(f"\n[INFO] Loading BETH data from {INPUT_CSV}")
+    try:
+        df = load_beth_csv(INPUT_CSV)
+    except Exception as e:
+        print(f"[ERROR] Failed to load CSV: {e}")
+        return
 
     anomalies = select_anomalies(df)
     if anomalies.empty:
         print("[WARN] No anomalies to explain.")
         return
 
-    if MAX_ROWS is not None:
+    if MAX_ROWS is not None and len(anomalies) > MAX_ROWS:
         anomalies = anomalies.head(MAX_ROWS)
         print(f"[INFO] Limiting to first {len(anomalies)} anomalies for this run.")
 
-    print(f"[INFO] Explaining {len(anomalies)} anomalies with LLM...")
+    print(f"\n[INFO] Explaining {len(anomalies)} anomalies with {MODEL_ID}...")
+    print(f"[INFO] Output will be saved to: {OUTPUT_JSONL}\n")
+
+    explained_count = 0
+    error_count = 0
 
     with open(OUTPUT_JSONL, "w", encoding="utf-8") as f_out:
-        for i, (_, row) in enumerate(anomalies.iterrows(), start=1):
+        for i, (original_idx, row) in enumerate(anomalies.iterrows(), start=1):
             try:
-                explanation = explain_beth_anomaly(row)
+                explanation = explain_beth_anomaly(agent, row, original_idx)
+                
+                if "_error" in explanation:
+                    error_count += 1
+                else:
+                    explained_count += 1
+                
             except Exception as e:
+                print(f"[ERROR] Unexpected error on row {original_idx}: {e}")
+                error_count += 1
                 explanation = {
                     "verdict": "unclear",
-                    "confidence": "low",
-                    "mitre_techniques": [],
+                    "confidence_label": "low",
+                    "confidence_score": 0.1,
+                    "mitre": [],
                     "key_indicators": [],
-                    "notes": f"Error calling LLM: {e}",
+                    "notes": f"Unexpected error: {e}",
                     "_llm_timestamp_utc": datetime.now().astimezone().isoformat(),
+                    "_row_index": original_idx,
+                    "_error": "unexpected_error"
                 }
 
             # Write one JSON object per line
             f_out.write(json.dumps(explanation, ensure_ascii=False) + "\n")
 
             if i % 10 == 0:
-                print(f"[INFO] Processed {i} anomalies...")
+                print(f"[PROGRESS] Processed {i}/{len(anomalies)} anomalies... "
+                      f"(✓ {explained_count} | ✗ {error_count})")
 
-    print(f"[INFO] Wrote explanations to {OUTPUT_JSONL}")
+    print(f"\n[SUCCESS] Completed processing {len(anomalies)} anomalies")
+    print(f"[STATS] Successfully explained: {explained_count}")
+    print(f"[STATS] Errors encountered: {error_count}")
+    print(f"[OUTPUT] Results written to: {os.path.abspath(OUTPUT_JSONL)}")
 
 
 if __name__ == "__main__":

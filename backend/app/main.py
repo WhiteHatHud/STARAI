@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from app.routes import user_routes, anomaly_routes
+from app.routes import user_routes, anomaly_routes, agents_routes
 from app.database.connection import create_indexes, reset_database
 
 # Initialize FastAPI app
@@ -62,6 +62,8 @@ app.include_router(user_routes.admin_router, prefix="/api", tags=["Admin"])
 
 # Anomaly Detection Routes (Main System)
 app.include_router(anomaly_routes.router, prefix="/api/anomaly", tags=["Anomaly Detection"])
+
+app.include_router(agents_routes.router, prefix="/api/agents", tags=["agents"])
 
 if APP_ENV == "production" or APP_ENV == "test":
     # Serve React static files

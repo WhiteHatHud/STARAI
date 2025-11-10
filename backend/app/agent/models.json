@@ -1,0 +1,22 @@
+{
+  "gemini-2.5-flash": {
+    "provider": "gemini",
+    "system_prompt": true
+  },
+  "gemini-2.5-pro": {
+    "provider": "gemini",
+    "system_prompt": true
+  },
+  "fdtn-ai/Foundation-Sec-8B-Instruct": {
+    "provider": "huggingface",
+    "system_prompt": true
+  },
+  "segolilylabs/Lily-Cybersecurity-7B-v0.2": {
+    "provider": "huggingface",
+    "system_prompt": false
+  },
+  "gpt-5-mini": {
+    "provider": "azure",
+    "system_prompt": true
+  }
+}
