@@ -119,15 +119,17 @@ async def get_user_datasets(
     - Sorted by upload date (newest first)
     """
     try:
+        logger.info(f"Fetching datasets for user {current_user.id}, status={status}, limit={limit}")
         datasets = await anomaly_repo.get_user_datasets(
             current_user=current_user,
             status=status,
             limit=limit
         )
+        logger.info(f"Successfully retrieved {len(datasets)} datasets for user {current_user.id}")
         return datasets
     except Exception as e:
-        logger.error(f"Error retrieving datasets: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve datasets")
+        logger.error(f"Error retrieving datasets for user {current_user.id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve datasets: {str(e)}")
 
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetModel)
@@ -347,18 +349,38 @@ async def analyze_dataset_test(
             "columns_analyzed": df.columns.tolist()[:10]  # First 10 columns
         }
 
-    except HTTPException:
+    except HTTPException as he:
+        # If it's a 404 or other HTTP exception, don't try to update dataset status
+        logger.error(f"HTTP error analyzing dataset {dataset_id}: {he.detail}")
+
+        # Only update session if it was created
+        if session:
+            try:
+                await anomaly_repo.update_session_progress(
+                    session_id=session.id,
+                    status=SessionStatus.ERROR,
+                    progress=0,
+                    current_step="Analysis failed",
+                    error_message=str(he.detail)
+                )
+            except:
+                pass
         raise
     except Exception as e:
         logger.error(f"Error analyzing dataset {dataset_id}: {str(e)}", exc_info=True)
-        # Update dataset status to failed
+        # Update dataset status to failed (only if we got past the dataset fetch)
         try:
             await anomaly_repo.update_dataset(
                 dataset_id=dataset_id,
                 updates={"status": "failed"}
             )
-            # Update session to error if it exists
-            if session:
+            logger.info(f"Updated dataset {dataset_id} status to 'failed'")
+        except Exception as update_error:
+            logger.error(f"Failed to update dataset status to 'failed': {str(update_error)}")
+
+        # Update session to error if it exists
+        if session:
+            try:
                 await anomaly_repo.update_session_progress(
                     session_id=session.id,
                     status=SessionStatus.ERROR,
@@ -366,8 +388,9 @@ async def analyze_dataset_test(
                     current_step="Analysis failed",
                     error_message=str(e)
                 )
-        except:
-            pass
+            except Exception as session_error:
+                logger.error(f"Failed to update session status: {str(session_error)}")
+
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 

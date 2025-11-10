@@ -70,6 +70,7 @@ class DatasetModel(BaseModel):
     model_config = {
         "populate_by_name": True,
         "json_encoders": {ObjectId: str},
+        "by_alias": False,  # Use field names, not aliases in responses
         "json_schema_extra": {
             "example": {
                 "id": "673abcd1234567890abcdef0",
@@ -141,6 +142,7 @@ class DetectedAnomaly(BaseModel):
     model_config = {
         "populate_by_name": True,
         "json_encoders": {ObjectId: str},
+        "by_alias": False,  # Use field names, not aliases in responses
         "json_schema_extra": {
             "example": {
                 "id": "673def1234567890abcdef2",
@@ -288,6 +290,7 @@ class AnomalyReport(BaseModel):
     model_config = {
         "populate_by_name": True,
         "json_encoders": {ObjectId: str},
+        "by_alias": False,  # Use field names, not aliases in responses
         "json_schema_extra": {
             "example": {
                 "id": "673xyz1234567890abcdef3",
@@ -355,7 +358,8 @@ class AnalysisSession(BaseModel):
 
     model_config = {
         "populate_by_name": True,
-        "json_encoders": {ObjectId: str}
+        "json_encoders": {ObjectId: str},
+        "by_alias": False  # Use field names, not aliases in responses
     }
 
 
@@ -394,6 +398,12 @@ class DatasetSummary(BaseModel):
     status: DatasetStatus
     uploaded_at: datetime
     anomalies_detected: int = 0
+
+    model_config = {
+        "populate_by_name": True,
+        "json_encoders": {ObjectId: str},
+        "by_alias": False  # Use field names, not aliases in responses
+    }
 
 
 # ============================================================================
@@ -519,6 +529,7 @@ class LLMExplanation(BaseModel):
     model_config = {
         "populate_by_name": True,
         "json_encoders": {ObjectId: str},
+        "by_alias": False,  # Use field names, not aliases in responses
         "json_schema_extra": {
             "example": {
                 "schema_version": "1.0",

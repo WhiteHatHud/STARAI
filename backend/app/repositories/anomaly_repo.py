@@ -61,7 +61,15 @@ async def create_dataset(
         status=DatasetStatus.UPLOADED
     )
 
-    result = datasets_collection.insert_one(dataset.model_dump(by_alias=True))
+    # Prepare document for insertion
+    dataset_dict = dataset.model_dump(by_alias=True)
+
+    # CRITICAL FIX: Convert _id from string to ObjectId for MongoDB
+    # PyObjectId is defined as a string type, but MongoDB needs actual ObjectId
+    if "_id" in dataset_dict and isinstance(dataset_dict["_id"], str):
+        dataset_dict["_id"] = ObjectId(dataset_dict["_id"])
+
+    result = datasets_collection.insert_one(dataset_dict)
     dataset.id = str(result.inserted_id)
 
     logger.info(f"Created dataset {dataset.id} for user {user_id}")
@@ -70,16 +78,23 @@ async def create_dataset(
 
 async def get_dataset(dataset_id: str, current_user: User) -> DatasetModel:
     """Get a specific dataset by ID"""
-    query = {"_id": ObjectId(dataset_id)}
+    try:
+        query = {"_id": ObjectId(dataset_id)}
+    except Exception as e:
+        logger.error(f"Invalid dataset ID format: {dataset_id}")
+        raise HTTPException(status_code=400, detail=f"Invalid dataset ID format: {dataset_id}")
 
     # Non-admin users can only access their own datasets
-    if not getattr(current_user, "is_admin", False):
+    is_admin = getattr(current_user, "is_admin", False)
+
+    if not is_admin:
         query["user_id"] = str(current_user.id)
 
     dataset_doc = datasets_collection.find_one(query)
 
     if not dataset_doc:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+        logger.warning(f"Dataset {dataset_id} not found for user {current_user.id}")
+        raise HTTPException(status_code=404, detail=f"Dataset not found or access denied")
 
     return DatasetModel.model_validate(dataset_doc)
 
@@ -90,33 +105,47 @@ async def get_user_datasets(
     limit: int = 50
 ) -> List[DatasetSummary]:
     """Get all datasets for a user with optional status filter"""
-    query = {"user_id": str(current_user.id)}
+    try:
+        query = {"user_id": str(current_user.id)}
+        logger.debug(f"Querying datasets with: {query}")
 
-    if status:
-        query["status"] = status.value
+        if status:
+            query["status"] = status.value
 
-    cursor = datasets_collection.find(query).sort("uploaded_at", -1).limit(limit)
-    datasets = list(cursor)
+        cursor = datasets_collection.find(query).sort("uploaded_at", -1).limit(limit)
+        datasets = list(cursor)
+        logger.debug(f"Found {len(datasets)} datasets")
 
-    # Build summaries with anomaly counts
-    summaries = []
-    for doc in datasets:
-        dataset_id = str(doc["_id"])
+        # Build summaries with anomaly counts
+        summaries = []
+        for doc in datasets:
+            try:
+                dataset_id = str(doc["_id"])
 
-        # Count anomalies for this dataset
-        anomaly_count = anomalies_collection.count_documents({"dataset_id": dataset_id})
+                # Count anomalies for this dataset
+                anomaly_count = anomalies_collection.count_documents({"dataset_id": dataset_id})
 
-        summaries.append(DatasetSummary(
-            id=dataset_id,
-            filename=doc["filename"],
-            total_rows=doc.get("total_rows", 0),
-            sheet_count=doc.get("sheet_count", 0),
-            status=doc["status"],
-            uploaded_at=doc["uploaded_at"],
-            anomalies_detected=anomaly_count
-        ))
+                summary = DatasetSummary(
+                    id=dataset_id,
+                    filename=doc.get("filename", "Unknown"),
+                    total_rows=doc.get("total_rows", 0),
+                    sheet_count=doc.get("sheet_count", 0),
+                    status=doc.get("status", "uploaded"),
+                    uploaded_at=doc.get("uploaded_at", datetime.now(timezone.utc)),
+                    anomalies_detected=anomaly_count
+                )
+                summaries.append(summary)
+            except Exception as e:
+                logger.error(f"Error processing dataset {doc.get('_id')}: {str(e)}")
+                # Skip this dataset and continue
+                continue
 
-    return summaries
+        logger.info(f"Returning {len(summaries)} dataset summaries")
+        return summaries
+
+    except Exception as e:
+        logger.error(f"Error in get_user_datasets: {str(e)}", exc_info=True)
+        raise
 
 
 async def update_dataset(
@@ -271,7 +300,13 @@ async def create_anomaly(
         status=AnomalyStatus.DETECTED
     )
 
-    result = anomalies_collection.insert_one(anomaly.model_dump(by_alias=True))
+    anomaly_dict = anomaly.model_dump(by_alias=True)
+
+    # Convert _id from string to ObjectId
+    if "_id" in anomaly_dict and isinstance(anomaly_dict["_id"], str):
+        anomaly_dict["_id"] = ObjectId(anomaly_dict["_id"])
+
+    result = anomalies_collection.insert_one(anomaly_dict)
     anomaly.id = str(result.inserted_id)
 
     logger.info(f"Created anomaly {anomaly.id} for dataset {dataset_id}")
@@ -352,7 +387,13 @@ async def create_anomaly_report(
         status=ReportStatus.PENDING_TRIAGE
     )
 
-    result = anomaly_reports_collection.insert_one(report.model_dump(by_alias=True))
+    report_dict = report.model_dump(by_alias=True)
+
+    # Convert _id from string to ObjectId
+    if "_id" in report_dict and isinstance(report_dict["_id"], str):
+        report_dict["_id"] = ObjectId(report_dict["_id"])
+
+    result = anomaly_reports_collection.insert_one(report_dict)
     report.id = str(result.inserted_id)
 
     logger.info(f"Created anomaly report {report.id} for anomaly {anomaly_id}")
@@ -523,7 +564,13 @@ async def create_analysis_session(
         current_step="Initializing analysis..."
     )
 
-    result = analysis_sessions_collection.insert_one(session.model_dump(by_alias=True))
+    session_dict = session.model_dump(by_alias=True)
+
+    # Convert _id from string to ObjectId
+    if "_id" in session_dict and isinstance(session_dict["_id"], str):
+        session_dict["_id"] = ObjectId(session_dict["_id"])
+
+    result = analysis_sessions_collection.insert_one(session_dict)
     session.id = str(result.inserted_id)
 
     logger.info(f"Created analysis session {session.id} for dataset {dataset_id}")
@@ -657,6 +704,10 @@ async def create_llm_explanation(
     # Ensure timestamps are set
     if "_created_at" not in explanation_data:
         explanation_data["_created_at"] = datetime.now(timezone.utc)
+
+    # Convert _id from string to ObjectId if present
+    if "_id" in explanation_data and isinstance(explanation_data["_id"], str):
+        explanation_data["_id"] = ObjectId(explanation_data["_id"])
 
     result = llm_explanations_collection.insert_one(explanation_data)
     explanation_data["_id"] = str(result.inserted_id)
