@@ -1,0 +1,3 @@
+timestamp,processId,threadId,parentProcessId,userId,mountNamespace,processName,hostName,eventId,eventName,stackAddresses,argsNum,returnValue,args,sus,evil
+132.477656,1407,1407,1326,1000,4026531840,sshd,ip-10-100-1-217,3,close,[140188055673223],1,0,"[{'name': 'fd', 'type': 'int', 'value': 10}]",1,1
+132.477749,1407,1407,1326,1000,4026531840,sshd,ip-10-100-1-217,1006,security_inode_unlink,"[140188055678523, 94544970612048]",1,0,"[{'name': 'pathname', 'type': 'const char*', 'value': '/tmp/ssh-ITim7SZsmg/agent.1407'}]",1,1
