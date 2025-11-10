@@ -250,7 +250,7 @@ class TabularAnomalyDetector:
             anomalous_features = [
                 {
                     "feature_name": self.feature_names[i],
-                    "actual_value": float(df.iloc[idx][self.feature_names[i]]),
+                    "actual_value": float(X[idx][i]),  # Use preprocessed value instead of raw
                     "reconstruction_error": float(feature_errors[i])
                 }
                 for i in top_feature_indices

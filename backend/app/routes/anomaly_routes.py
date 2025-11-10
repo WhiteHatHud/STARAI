@@ -212,11 +212,15 @@ async def analyze_dataset_test(
 
     This is for testing only. In production, use async Celery tasks.
 
-    - Downloads Excel from S3
+    This endpoint:
+    - Downloads Excel/CSV from S3
     - Trains autoencoder on the data
-    - Detects anomalies
-    - Stores results in database
+    - Detects ALL anomalies (stores all in database)
     - Returns summary
+
+    Note: This stores ALL detected anomalies. To limit LLM analysis to top N anomalies
+    (for faster testing and lower token usage), use the /analyze-with-llm endpoint
+    with the max_anomalies parameter (default: 2).
     """
     session = None
     try:
@@ -248,7 +252,7 @@ async def analyze_dataset_test(
             progress=10,
             current_step="Downloading file from S3..."
         )
-        await anomaly_repo.update_dataset(dataset_id, {"status": "processing"})
+        await anomaly_repo.update_dataset(dataset_id, {"status": "analyzing"})
 
         # Download file from S3
         logger.info(f"Downloading from S3: {dataset.s3_key}")
@@ -372,11 +376,11 @@ async def analyze_dataset_test(
         try:
             await anomaly_repo.update_dataset(
                 dataset_id=dataset_id,
-                updates={"status": "failed"}
+                updates={"status": "error"}
             )
-            logger.info(f"Updated dataset {dataset_id} status to 'failed'")
+            logger.info(f"Updated dataset {dataset_id} status to 'error'")
         except Exception as update_error:
-            logger.error(f"Failed to update dataset status to 'failed': {str(update_error)}")
+            logger.error(f"Failed to update dataset status to 'error': {str(update_error)}")
 
         # Update session to error if it exists
         if session:
@@ -772,7 +776,7 @@ async def health_check():
 @router.post("/datasets/{dataset_id}/analyze-with-llm")
 async def analyze_dataset_with_llm(
     dataset_id: str,
-    max_anomalies: int = Query(default=100, ge=1, le=500, description="Maximum number of anomalies to analyze"),
+    max_anomalies: int = Query(default=2, ge=1, le=500, description="Maximum number of anomalies to analyze (default: 2 for faster testing)"),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -780,9 +784,13 @@ async def analyze_dataset_with_llm(
 
     This endpoint:
     1. Fetches all detected anomalies for the dataset
-    2. Sends each anomaly to Azure OpenAI GPT-5-mini for triage analysis
-    3. Stores the LLM explanations in the database
-    4. Returns summary of analysis
+    2. Sorts anomalies by score (highest/most suspicious first)
+    3. Sends top N anomalies to Azure OpenAI GPT-5-mini for triage analysis
+    4. Stores the LLM explanations in the database
+    5. Returns summary of analysis
+
+    By default, only analyzes top 2 anomalies for faster testing and lower token usage.
+    Increase max_anomalies parameter for production use.
 
     Requires Azure OpenAI to be configured in environment variables.
     """
@@ -816,19 +824,25 @@ async def analyze_dataset_with_llm(
                 detail="No anomalies found for this dataset. Run anomaly detection first."
             )
 
-        # Limit anomalies if needed
-        if len(anomalies) > max_anomalies:
-            logger.info(f"Limiting analysis to first {max_anomalies} anomalies (total: {len(anomalies)})")
-            anomalies = anomalies[:max_anomalies]
+        # Sort anomalies by score (highest/most suspicious first)
+        anomalies_sorted = sorted(anomalies, key=lambda x: x.anomaly_score, reverse=True)
+        logger.info(f"Found {len(anomalies_sorted)} anomalies. Scores range: {anomalies_sorted[0].anomaly_score:.4f} to {anomalies_sorted[-1].anomaly_score:.4f}")
 
-        logger.info(f"Analyzing {len(anomalies)} anomalies with LLM")
+        # Limit to top N anomalies for LLM analysis
+        if len(anomalies_sorted) > max_anomalies:
+            logger.info(f"Limiting LLM analysis to top {max_anomalies} highest-scoring anomalies (total: {len(anomalies_sorted)})")
+            anomalies_to_analyze = anomalies_sorted[:max_anomalies]
+        else:
+            anomalies_to_analyze = anomalies_sorted
+
+        logger.info(f"Analyzing {len(anomalies_to_analyze)} anomalies with LLM (scores: {[f'{a.anomaly_score:.4f}' for a in anomalies_to_analyze]})")
 
         # Process each anomaly
         explanations_created = 0
         explanations_skipped = 0
         errors = []
 
-        for anomaly in anomalies:
+        for anomaly in anomalies_to_analyze:
             try:
                 # Check if explanation already exists
                 existing_explanation = await anomaly_repo.get_llm_explanation_by_anomaly_id(anomaly.id)
@@ -861,7 +875,7 @@ async def analyze_dataset_with_llm(
                 explanations_created += 1
 
                 if explanations_created % 10 == 0:
-                    logger.info(f"Processed {explanations_created}/{len(anomalies)} anomalies")
+                    logger.info(f"Processed {explanations_created}/{len(anomalies_to_analyze)} anomalies")
 
             except Exception as e:
                 error_msg = f"Error analyzing anomaly {anomaly.id}: {str(e)}"
@@ -873,11 +887,13 @@ async def analyze_dataset_with_llm(
 
         return {
             "dataset_id": dataset_id,
-            "total_anomalies": len(anomalies),
+            "total_anomalies_detected": len(anomalies_sorted),
+            "anomalies_analyzed_by_llm": len(anomalies_to_analyze),
             "explanations_created": explanations_created,
             "explanations_skipped": explanations_skipped,
             "errors": errors[:10],  # Limit errors in response
-            "status": "completed" if len(errors) == 0 else "completed_with_errors"
+            "status": "completed" if len(errors) == 0 else "completed_with_errors",
+            "note": f"Analyzed top {len(anomalies_to_analyze)} highest-scoring anomalies out of {len(anomalies_sorted)} total"
         }
 
     except HTTPException:

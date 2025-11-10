@@ -44,6 +44,8 @@ const DatasetDetailPage = () => {
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [analyzingLLM, setAnalyzingLLM] = useState(false);
+  const [llmAnalysisResult, setLlmAnalysisResult] = useState(null);
 
   // Fetch dataset details
   const fetchDataset = async () => {
@@ -126,6 +128,38 @@ const DatasetDetailPage = () => {
     } finally {
       setAnalyzing(false);
       setAnalysisProgress(0);
+    }
+  };
+
+  // Trigger LLM Analysis (only top 2 anomalies)
+  const handleLLMAnalysis = async (maxAnomalies = 2) => {
+    setAnalyzingLLM(true);
+    setLlmAnalysisResult(null);
+
+    try {
+      message.info(`Analyzing top ${maxAnomalies} anomalies with AI...`);
+
+      const response = await axios.post(
+        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/analyze-with-llm?max_anomalies=${maxAnomalies}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setLlmAnalysisResult(response.data);
+
+      message.success(
+        `LLM Analysis complete! Generated ${response.data.explanations_created} explanations.`
+      );
+
+      // Refresh anomalies to show updated data
+      await fetchAnomalies();
+    } catch (error) {
+      console.error("LLM Analysis error:", error);
+      message.error(
+        error.response?.data?.detail || "LLM Analysis failed. Please check Azure OpenAI configuration."
+      );
+    } finally {
+      setAnalyzingLLM(false);
     }
   };
 
@@ -335,6 +369,65 @@ const DatasetDetailPage = () => {
             <Progress percent={analysisProgress} status="active" />
             <Text type="secondary">
               This may take a few minutes. The autoencoder is learning patterns in your data.
+            </Text>
+          </Space>
+        </Card>
+      )}
+
+      {/* LLM Analysis Button - Shows after autoencoder completes */}
+      {isAnalyzed && anomalies.length > 0 && !analyzingLLM && (
+        <Alert
+          message="🤖 AI Triage Analysis Available"
+          description={
+            <Space direction="vertical" size="small">
+              <Text>
+                Run AI-powered security analysis on the top {Math.min(2, anomalies.length)} highest-scoring anomalies.
+              </Text>
+              <Text type="secondary" style={{ fontSize: "12px" }}>
+                This will use Azure OpenAI to generate detailed security insights, MITRE ATT&CK mappings, and triage recommendations.
+              </Text>
+              {llmAnalysisResult && (
+                <Text type="success" strong>
+                  ✓ Last analysis: {llmAnalysisResult.explanations_created} explanations created
+                  ({llmAnalysisResult.total_anomalies_detected} total anomalies detected)
+                </Text>
+              )}
+            </Space>
+          }
+          type="info"
+          showIcon
+          action={
+            <Space direction="vertical">
+              <Button
+                type="primary"
+                size="large"
+                icon={<RocketOutlined />}
+                onClick={() => handleLLMAnalysis(2)}
+                loading={analyzingLLM}
+              >
+                Analyze Top 2 with AI
+              </Button>
+              <Button
+                size="small"
+                onClick={() => handleLLMAnalysis(10)}
+                loading={analyzingLLM}
+              >
+                Analyze Top 10
+              </Button>
+            </Space>
+          }
+          style={{ marginBottom: 24 }}
+        />
+      )}
+
+      {/* LLM Analysis Progress */}
+      {analyzingLLM && (
+        <Card style={{ marginBottom: 24 }}>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Text strong>🤖 Running AI Triage Analysis...</Text>
+            <Spin size="large" />
+            <Text type="secondary">
+              Sending anomalies to Azure OpenAI for security analysis. This usually takes 10-30 seconds.
             </Text>
           </Space>
         </Card>
