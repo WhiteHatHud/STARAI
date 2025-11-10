@@ -46,8 +46,8 @@ async def run_agent(request: AgentRunRequest):
         
         # Build generation parameters
         gen_kwargs = {}
-        if request.system:
-            gen_kwargs["system"] = request.system
+        if request.system_prompt:
+            gen_kwargs["system_prompt"] = request.system_prompt
         if request.temperature is not None:
             gen_kwargs["temperature"] = request.temperature
         if request.max_tokens is not None:

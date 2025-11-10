@@ -38,16 +38,15 @@ class AgentRunRequest(BaseModel):
     system_prompt: Optional[str] = Field(None, description="Optional system prompt override")
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature setting")
     max_tokens: Optional[int] = Field(None, gt=0, description="Maximum tokens to generate")
-    max_new_tokens: Optional[int] = Field(None, gt=0, description="Maximum new tokens (HuggingFace)")
     top_p: Optional[float] = Field(None, ge=0.0, le=1.0, description="Top-p sampling")
     repetition_penalty: Optional[float] = Field(None, ge=1.0, le=2.0, description="Repetition penalty")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "model_id": "gemini-2.5-flash",
+                "model_id": "gpt-5-mini",
                 "prompt": "What is SOLID principle in software engineering?",
-                "system": "You are an expert software engineer",
+                "system_prompt": "You are an expert software engineer",
                 "temperature": 0.7
             }
         }
