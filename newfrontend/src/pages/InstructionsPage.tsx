@@ -1,4 +1,3 @@
-import MainLayout from "@/components/MainLayout";
 import { Card } from "@/components/ui/card";
 import {
   Upload,
@@ -10,8 +9,7 @@ import {
 
 const InstructionsPage = () => {
   return (
-    <MainLayout>
-      <div className="container max-w-5xl mx-auto p-6 md:p-8">
+    <div className="container max-w-5xl mx-auto p-6 md:p-8">
         <div className="mb-8">
           <h1 className="text-4xl md:text-5xl font-bold mb-2">
             User Instructions
@@ -184,7 +182,6 @@ const InstructionsPage = () => {
           </Card>
         </div>
       </div>
-    </MainLayout>
   );
 };
 

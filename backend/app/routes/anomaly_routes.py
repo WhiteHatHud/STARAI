@@ -216,6 +216,7 @@ async def analyze_dataset_test(
     - Stores results in database
     - Returns summary
     """
+    session = None
     try:
         from app.utils.anomaly_detector import detect_anomalies_in_excel, TF_AVAILABLE
 
@@ -232,18 +233,55 @@ async def analyze_dataset_test(
 
         logger.info(f"Starting TEST analysis for dataset {dataset_id}")
 
-        # Update status
+        # Create analysis session
+        session = await anomaly_repo.create_analysis_session(
+            user_id=str(current_user.id),
+            dataset_id=dataset_id
+        )
+
+        # Update status to parsing
+        await anomaly_repo.update_session_progress(
+            session_id=session.id,
+            status=SessionStatus.PARSING,
+            progress=10,
+            current_step="Downloading file from S3..."
+        )
         await anomaly_repo.update_dataset(dataset_id, {"status": "processing"})
 
-        # Download Excel from S3
+        # Download file from S3
         logger.info(f"Downloading from S3: {dataset.s3_key}")
-        file_stream = s3_manager.get_object_stream(dataset.s3_key)
+        file_content = s3_manager.get_object_stream(dataset.s3_key).read()
 
-        # Parse Excel to DataFrame
-        df = pd.read_excel(file_stream, sheet_name=0)
-        logger.info(f"Parsed Excel: {len(df)} rows, {len(df.columns)} columns")
+        # Parse file to DataFrame (handle both XLSX and CSV)
+        await anomaly_repo.update_session_progress(
+            session_id=session.id,
+            status=SessionStatus.PARSING,
+            progress=30,
+            current_step="Parsing file..."
+        )
+
+        is_csv = dataset.filename.lower().endswith('.csv')
+        if is_csv:
+            from io import StringIO
+            # Decode bytes to string for CSV
+            try:
+                text_content = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                text_content = file_content.decode('latin-1')
+            df = pd.read_csv(StringIO(text_content))
+        else:
+            from io import BytesIO
+            df = pd.read_excel(BytesIO(file_content), sheet_name=0)
+
+        logger.info(f"Parsed file: {len(df)} rows, {len(df.columns)} columns")
 
         # Detect anomalies
+        await anomaly_repo.update_session_progress(
+            session_id=session.id,
+            status=SessionStatus.DETECTING,
+            progress=50,
+            current_step="Training autoencoder model..."
+        )
         logger.info("Running anomaly detection...")
         anomalies, detector = detect_anomalies_in_excel(
             df=df,
@@ -254,6 +292,12 @@ async def analyze_dataset_test(
         logger.info(f"Detected {len(anomalies)} anomalies")
 
         # Store anomalies in database
+        await anomaly_repo.update_session_progress(
+            session_id=session.id,
+            status=SessionStatus.DETECTING,
+            progress=80,
+            current_step=f"Storing {len(anomalies)} detected anomalies..."
+        )
         stored_count = 0
         for anomaly in anomalies:
             try:
@@ -275,8 +319,18 @@ async def analyze_dataset_test(
             dataset_id=dataset_id,
             updates={
                 "status": "completed",
-                "anomaly_count": stored_count
+                "anomaly_count": stored_count,
+                "analyzed_at": datetime.utcnow()
             }
+        )
+
+        # Mark session as completed
+        await anomaly_repo.update_session_progress(
+            session_id=session.id,
+            status=SessionStatus.COMPLETED,
+            progress=100,
+            current_step="Analysis complete",
+            anomalies_detected=stored_count
         )
 
         logger.info(f"Analysis complete: {stored_count} anomalies stored")
@@ -303,6 +357,15 @@ async def analyze_dataset_test(
                 dataset_id=dataset_id,
                 updates={"status": "failed"}
             )
+            # Update session to error if it exists
+            if session:
+                await anomaly_repo.update_session_progress(
+                    session_id=session.id,
+                    status=SessionStatus.ERROR,
+                    progress=0,
+                    current_step="Analysis failed",
+                    error_message=str(e)
+                )
         except:
             pass
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
@@ -677,3 +740,190 @@ async def health_check():
         "service": "anomaly-detection",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+# ============================================================================
+# LLM TRIAGE ANALYSIS ROUTES
+# ============================================================================
+
+@router.post("/datasets/{dataset_id}/analyze-with-llm")
+async def analyze_dataset_with_llm(
+    dataset_id: str,
+    max_anomalies: int = Query(default=100, ge=1, le=500, description="Maximum number of anomalies to analyze"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Analyze detected anomalies using Azure OpenAI LLM.
+
+    This endpoint:
+    1. Fetches all detected anomalies for the dataset
+    2. Sends each anomaly to Azure OpenAI GPT-5-mini for triage analysis
+    3. Stores the LLM explanations in the database
+    4. Returns summary of analysis
+
+    Requires Azure OpenAI to be configured in environment variables.
+    """
+    try:
+        from app.utils.llm_triage import analyze_anomaly_with_llm, AZURE_CONFIGURED
+
+        if not AZURE_CONFIGURED:
+            raise HTTPException(
+                status_code=500,
+                detail="Azure OpenAI is not configured. Please set AZURE_OPENAI_ENDPOINT, "
+                       "AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT, and AZURE_OPENAI_API_VERSION "
+                       "environment variables."
+            )
+
+        # Get dataset and verify ownership
+        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+
+        logger.info(f"Starting LLM triage analysis for dataset {dataset_id}")
+
+        # Get all anomalies for this dataset
+        anomalies = await anomaly_repo.get_dataset_anomalies(
+            dataset_id=dataset_id,
+            current_user=current_user
+        )
+
+        if not anomalies:
+            raise HTTPException(
+                status_code=404,
+                detail="No anomalies found for this dataset. Run anomaly detection first."
+            )
+
+        # Limit anomalies if needed
+        if len(anomalies) > max_anomalies:
+            logger.info(f"Limiting analysis to first {max_anomalies} anomalies (total: {len(anomalies)})")
+            anomalies = anomalies[:max_anomalies]
+
+        logger.info(f"Analyzing {len(anomalies)} anomalies with LLM")
+
+        # Process each anomaly
+        explanations_created = 0
+        explanations_skipped = 0
+        errors = []
+
+        for anomaly in anomalies:
+            try:
+                # Check if explanation already exists
+                existing_explanation = await anomaly_repo.get_llm_explanation_by_anomaly_id(anomaly.id)
+
+                if existing_explanation:
+                    logger.debug(f"Skipping anomaly {anomaly.id} - explanation already exists")
+                    explanations_skipped += 1
+                    continue
+
+                # Prepare anomaly data for LLM
+                anomaly_data = {
+                    "timestamp": anomaly.detected_at.isoformat() if anomaly.detected_at else None,
+                    "anomaly_score": anomaly.anomaly_score,
+                    "row_index": anomaly.row_index,
+                    "sheet_name": anomaly.sheet_name,
+                    "raw_data": anomaly.raw_data,
+                    "anomalous_features": [f.model_dump() for f in anomaly.anomalous_features] if anomaly.anomalous_features else [],
+                }
+
+                # Call LLM
+                explanation_data = analyze_anomaly_with_llm(
+                    anomaly_data=anomaly_data,
+                    dataset_id=dataset_id,
+                    anomaly_id=anomaly.id,
+                    session_id=None
+                )
+
+                # Store explanation
+                await anomaly_repo.create_llm_explanation(explanation_data)
+                explanations_created += 1
+
+                if explanations_created % 10 == 0:
+                    logger.info(f"Processed {explanations_created}/{len(anomalies)} anomalies")
+
+            except Exception as e:
+                error_msg = f"Error analyzing anomaly {anomaly.id}: {str(e)}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+                # Continue with next anomaly
+
+        logger.info(f"LLM analysis complete: {explanations_created} created, {explanations_skipped} skipped, {len(errors)} errors")
+
+        return {
+            "dataset_id": dataset_id,
+            "total_anomalies": len(anomalies),
+            "explanations_created": explanations_created,
+            "explanations_skipped": explanations_skipped,
+            "errors": errors[:10],  # Limit errors in response
+            "status": "completed" if len(errors) == 0 else "completed_with_errors"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during LLM analysis for dataset {dataset_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"LLM analysis failed: {str(e)}")
+
+
+@router.get("/datasets/{dataset_id}/llm-explanations")
+async def get_dataset_llm_explanations(
+    dataset_id: str,
+    verdict: Optional[str] = Query(None, description="Filter by verdict (suspicious/likely_malicious/unclear)"),
+    severity: Optional[str] = Query(None, description="Filter by severity (low/medium/high/critical)"),
+    limit: int = Query(100, ge=1, le=500, description="Maximum number of explanations"),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all LLM explanations for a dataset.
+
+    Returns detailed triage analysis including:
+    - Verdict and severity
+    - MITRE ATT&CK technique mappings
+    - Key indicators
+    - Triage recommendations (immediate/short-term/long-term)
+    - Confidence scores
+    """
+    try:
+        # Verify dataset ownership
+        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
+
+        explanations = await anomaly_repo.get_llm_explanations_by_dataset(
+            dataset_id=dataset_id,
+            verdict=verdict,
+            severity=severity,
+            limit=limit
+        )
+
+        return explanations
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving LLM explanations for dataset {dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve LLM explanations")
+
+
+@router.get("/llm-explanations/{explanation_id}")
+async def get_llm_explanation(
+    explanation_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get a specific LLM explanation by ID"""
+    try:
+        from bson import ObjectId
+
+        doc = await anomaly_repo.llm_explanations_collection.find_one({"_id": ObjectId(explanation_id)})
+
+        if not doc:
+            raise HTTPException(status_code=404, detail="LLM explanation not found")
+
+        # Verify ownership through dataset
+        dataset = await anomaly_repo.get_dataset(doc["dataset_id"], current_user)
+
+        from app.models.anomaly_models import LLMExplanation
+        return LLMExplanation.model_validate(doc)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving LLM explanation {explanation_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve LLM explanation")

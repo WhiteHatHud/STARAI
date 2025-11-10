@@ -394,3 +394,141 @@ class DatasetSummary(BaseModel):
     status: DatasetStatus
     uploaded_at: datetime
     anomalies_detected: int = 0
+
+
+# ============================================================================
+# LLM EXPLANATION MODELS (Azure OpenAI Analysis)
+# ============================================================================
+
+class MitreTechnique(BaseModel):
+    """MITRE ATT&CK technique mapping"""
+    id: str  # e.g., "T1021.001"
+    name: str  # e.g., "Remote Services: SSH"
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    rationale: Optional[str] = None
+
+
+class ActorInfo(BaseModel):
+    """Information about the actor/user in the anomaly"""
+    user_id: Optional[str] = None
+    username: Optional[str] = None
+    process_name: Optional[str] = None
+    pid: Optional[int] = None
+    ppid: Optional[int] = None
+
+
+class HostInfo(BaseModel):
+    """Host information for the anomaly"""
+    hostname: Optional[str] = None
+    mount_ns: Optional[str] = None
+
+
+class EventArgument(BaseModel):
+    """Argument in the system event"""
+    name: str
+    type: str
+    value: str
+
+
+class EventInfo(BaseModel):
+    """System event details"""
+    name: str  # Event name (e.g., "close", "security_inode_unlink")
+    timestamp: Optional[str] = None
+    args: List[EventArgument] = Field(default_factory=list)
+
+
+class FeatureInfo(BaseModel):
+    """Feature values from anomaly detector"""
+    name: str
+    value: float
+    z: Optional[float] = None  # Z-score if applicable
+
+
+class EvidenceReference(BaseModel):
+    """Reference to source data"""
+    type: Literal["row"] = "row"
+    row_index: Optional[int] = None
+    sheet: Optional[str] = None
+    s3_key: Optional[str] = None
+
+
+class TriageActions(BaseModel):
+    """Triage recommendations from LLM"""
+    immediate_actions: List[str] = Field(default_factory=list)
+    short_term: List[str] = Field(default_factory=list)
+    long_term: List[str] = Field(default_factory=list)
+
+
+class ProvenanceInfo(BaseModel):
+    """LLM call metadata"""
+    model_name: str = "gpt-5-mini"
+    model_version: str = "base"
+    prompt_id: str = "beth-triage-v1"
+    temperature: float = 0.2
+    tokens_prompt: Optional[int] = None
+    tokens_output: Optional[int] = None
+    latency_ms: Optional[float] = None
+
+
+class LLMExplanation(BaseModel):
+    """
+    LLM-generated explanation for an anomaly.
+    Stored per anomaly after Azure OpenAI analysis.
+    """
+    id: Optional[PyObjectId] = Field(alias="_id", default_factory=lambda: str(ObjectId()))
+
+    # Core identifiers
+    schema_version: str = "1.0"
+    dataset_id: PyObjectId
+    anomaly_id: PyObjectId
+    session_id: Optional[PyObjectId] = None
+
+    # Verdict and severity
+    verdict: Literal["suspicious", "likely_malicious", "unclear"]
+    severity: Literal["low", "medium", "high", "critical"]
+    confidence_label: Literal["low", "medium", "high"]
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+
+    # MITRE ATT&CK mappings
+    mitre: List[MitreTechnique] = Field(default_factory=list)
+
+    # Context
+    actors: ActorInfo
+    host: HostInfo
+    event: EventInfo
+    features: List[FeatureInfo] = Field(default_factory=list)
+    evidence_refs: List[EvidenceReference] = Field(default_factory=list)
+
+    # Analysis
+    key_indicators: List[str] = Field(default_factory=list)
+    triage: TriageActions
+    notes: str
+
+    # Status tracking
+    status: Literal["new", "reviewed", "escalated", "resolved", "false_positive"] = "new"
+    owner: Optional[str] = None
+
+    # Metadata
+    provenance: ProvenanceInfo
+    hash: Optional[str] = None
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="_created_at")
+    llm_timestamp_utc: Optional[str] = Field(default=None, alias="_llm_timestamp_utc")
+
+    model_config = {
+        "populate_by_name": True,
+        "json_encoders": {ObjectId: str},
+        "json_schema_extra": {
+            "example": {
+                "schema_version": "1.0",
+                "dataset_id": "673abc1234567890abcdef1",
+                "anomaly_id": "673abc1234567890abcdef2",
+                "verdict": "suspicious",
+                "severity": "medium",
+                "confidence_label": "medium",
+                "confidence_score": 0.6,
+                "notes": "SSH daemon performed suspicious file operations"
+            }
+        }
+    }

@@ -181,3 +181,71 @@ All colors MUST be HSL.
   transform: translateY(-2px);
   box-shadow: var(--shadow-elegant);
 }
+
+/* Enhanced Interactive Styles */
+.hover-scale {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+.hover-glow {
+  transition: all 0.3s ease;
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px hsl(0 70% 50% / 0.3);
+}
+
+.hover-border-pulse {
+  transition: all 0.3s ease;
+}
+
+.hover-border-pulse:hover {
+  border-color: hsl(0 70% 50%);
+  box-shadow: 0 0 0 2px hsl(0 70% 50% / 0.2);
+}
+
+.interactive-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.interactive-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 30px -10px hsl(0 70% 50% / 0.3);
+  border-color: hsl(0 70% 50% / 0.5);
+}
+
+.interactive-card:active {
+  transform: translateY(-2px);
+}
+
+.button-hover-grow {
+  transition: all 0.2s ease;
+}
+
+.button-hover-grow:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px hsl(0 0% 0% / 0.15);
+}
+
+.button-hover-grow:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Smooth color transitions */
+.smooth-color-transition {
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Card background hover */
+.card-hover-bg {
+  transition: background-color 0.3s ease;
+}
+
+.card-hover-bg:hover {
+  background-color: hsl(0 70% 50% / 0.03);
+}

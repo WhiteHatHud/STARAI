@@ -1,8 +1,15 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import MainLayout from "@/components/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Upload,
   FileSpreadsheet,
@@ -11,6 +18,8 @@ import {
   Loader2,
   Eye,
   Trash2,
+  Filter,
+  ArrowUpDown,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
@@ -27,6 +36,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { StarAIClient } from "@/lib/api-client";
 
 interface Dataset {
   id: string;
@@ -39,15 +49,33 @@ interface Dataset {
   file_size?: number;
 }
 
+interface AnalysisProgress {
+  datasetId: string;
+  progress: number;
+  status: string;
+  message?: string;
+}
+
 const HomePage = () => {
   const navigate = useNavigate();
   const { user, token } = useStore();
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState<Map<string, AnalysisProgress>>(new Map());
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<string>("date");
   const dataFetchedRef = useRef(false);
+  const pollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Create API client instance
+  const apiClient = new StarAIClient({
+    baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api",
+    getToken: () => token,
+  });
 
   // Fetch all uploaded datasets
   const fetchDatasets = useCallback(async () => {
@@ -55,7 +83,7 @@ const HomePage = () => {
 
     setLoading(true);
     try {
-      const response = await axios.get("/anomaly/datasets/");
+      const response = await axios.get("/anomaly/datasets");
 
       // Sort by upload date (newest first)
       const sortedDatasets = (response.data || []).sort(
@@ -108,6 +136,92 @@ const HomePage = () => {
     }
   };
 
+  // Poll analysis progress
+  const pollAnalysisProgress = useCallback(async (datasetId: string) => {
+    try {
+      const session = await apiClient.datasets.session(datasetId);
+
+      setAnalysisProgress((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(datasetId, {
+          datasetId,
+          progress: session.progress || 0,
+          status: session.status,
+          message: session.message,
+        });
+        return newMap;
+      });
+
+      // If completed or failed, stop polling
+      if (session.status === "completed" || session.status === "failed" || session.status === "error") {
+        const interval = pollingIntervalsRef.current.get(datasetId);
+        if (interval) {
+          clearInterval(interval);
+          pollingIntervalsRef.current.delete(datasetId);
+        }
+
+        // Show completion toast
+        if (session.status === "completed") {
+          toast({
+            title: "Analysis Complete",
+            description: `Detected ${session.anomalies_detected || 0} anomalies`,
+          });
+        } else if (session.status === "failed" || session.status === "error") {
+          toast({
+            title: "Analysis Failed",
+            description: session.message || "Failed to analyze dataset",
+            variant: "destructive",
+          });
+        }
+
+        // Refresh datasets
+        dataFetchedRef.current = false;
+        fetchDatasets();
+
+        // Remove from progress map
+        setAnalysisProgress((prev) => {
+          const newMap = new Map(prev);
+          newMap.delete(datasetId);
+          return newMap;
+        });
+      }
+    } catch (error) {
+      console.error("Error polling progress:", error);
+      // Stop polling on error
+      const interval = pollingIntervalsRef.current.get(datasetId);
+      if (interval) {
+        clearInterval(interval);
+        pollingIntervalsRef.current.delete(datasetId);
+      }
+    }
+  }, [apiClient, fetchDatasets]);
+
+  // Start polling for a dataset
+  const startPolling = useCallback((datasetId: string) => {
+    // Don't start if already polling
+    if (pollingIntervalsRef.current.has(datasetId)) {
+      return;
+    }
+
+    // Initial poll
+    pollAnalysisProgress(datasetId);
+
+    // Set up interval
+    const interval = setInterval(() => {
+      pollAnalysisProgress(datasetId);
+    }, 2000); // Poll every 2 seconds
+
+    pollingIntervalsRef.current.set(datasetId, interval);
+  }, [pollAnalysisProgress]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      pollingIntervalsRef.current.forEach((interval) => clearInterval(interval));
+      pollingIntervalsRef.current.clear();
+    };
+  }, []);
+
   const handleUpload = async (file: File) => {
     // Validate .xlsx and .csv only
     const isXlsx = file.name.toLowerCase().endsWith(".xlsx");
@@ -124,16 +238,25 @@ const HomePage = () => {
     }
 
     setUploading(true);
+    setUploadProgress(0);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
+
+      // Simulate upload progress
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => Math.min(prev + 10, 90));
+      }, 200);
 
       const uploadResponse = await axios.post("/anomaly/datasets/upload", formData, {
         headers: {
           "Content-Type": "multipart/form-data",
         },
       });
+
+      clearInterval(progressInterval);
+      setUploadProgress(100);
 
       toast({
         title: "Upload Successful",
@@ -165,18 +288,12 @@ const HomePage = () => {
         description: "Running autoencoder anomaly detection...",
       });
 
+      // Start polling for progress
+      startPolling(datasetId);
+
       // Trigger analysis in the background
       axios
         .post(`/anomaly/datasets/${datasetId}/analyze-test`, {})
-        .then((analysisResponse) => {
-          toast({
-            title: "Analysis Complete",
-            description: `Detected ${analysisResponse.data.anomalies_detected || 0} anomalies`,
-          });
-          // Refresh the dataset list to show updated status
-          dataFetchedRef.current = false;
-          fetchDatasets();
-        })
         .catch((error) => {
           console.error("Analysis error:", error);
           toast({
@@ -203,6 +320,7 @@ const HomePage = () => {
       });
     } finally {
       setUploading(false);
+      setTimeout(() => setUploadProgress(0), 1000);
     }
   };
 
@@ -262,6 +380,26 @@ const HomePage = () => {
       icon: Loader2,
     };
   };
+
+  // Filter and sort datasets
+  const filteredAndSortedDatasets = datasets
+    .filter((dataset) => {
+      if (filterStatus === "all") return true;
+      const status = getStatusBadge(dataset);
+      return status.label.toLowerCase() === filterStatus;
+    })
+    .sort((a, b) => {
+      switch (sortBy) {
+        case "date":
+          return new Date(b.uploaded_at).getTime() - new Date(a.uploaded_at).getTime();
+        case "name":
+          return a.filename.localeCompare(b.filename);
+        case "anomalies":
+          return (b.anomaly_count || 0) - (a.anomaly_count || 0);
+        default:
+          return 0;
+      }
+    });
 
   const handleActiveDetection = () => {
     toast({
@@ -346,6 +484,16 @@ const HomePage = () => {
               </p>
             </div>
 
+            {/* Upload Progress Bar */}
+            {uploading && uploadProgress > 0 && (
+              <div className="w-full max-w-md space-y-2">
+                <Progress value={uploadProgress} className="h-3" />
+                <p className="text-sm text-center text-muted-foreground">
+                  Uploading... {uploadProgress}%
+                </p>
+              </div>
+            )}
+
             <input
               id="file-upload"
               type="file"
@@ -359,6 +507,7 @@ const HomePage = () => {
               disabled={uploading}
               onClick={() => document.getElementById("file-upload")?.click()}
               type="button"
+              className="button-hover-grow"
             >
               <FileSpreadsheet className="mr-2 h-5 w-5" />
               {uploading ? "Uploading..." : "Select File"}
@@ -386,7 +535,7 @@ const HomePage = () => {
                 <p className="text-center text-muted-foreground">
                   Real-time anomaly detection for live system monitoring
                 </p>
-                <Button size="lg" variant="default" onClick={handleActiveDetection}>
+                <Button size="lg" variant="default" onClick={handleActiveDetection} className="button-hover-grow">
                   <CheckCircle className="mr-2 h-5 w-5" />
                   Detect Now
                 </Button>
@@ -401,7 +550,7 @@ const HomePage = () => {
           <h2 className="text-2xl font-bold text-foreground">Your Datasets</h2>
           <div className="flex items-center space-x-3">
             <Badge variant="secondary" className="text-base px-4 py-2">
-              {datasets.length} {datasets.length === 1 ? "file" : "files"}
+              {filteredAndSortedDatasets.length} of {datasets.length} {datasets.length === 1 ? "file" : "files"}
             </Badge>
 
             {datasets.length > 0 && (
@@ -450,6 +599,36 @@ const HomePage = () => {
           </div>
         </div>
 
+        {/* Filters and Sorting */}
+        {datasets.length > 0 && (
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="w-full sm:w-[200px]">
+                <Filter className="w-4 h-4 mr-2" />
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Datasets</SelectItem>
+                <SelectItem value="ready">Ready</SelectItem>
+                <SelectItem value="processing">Processing</SelectItem>
+                <SelectItem value="failed">Failed</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={sortBy} onValueChange={setSortBy}>
+              <SelectTrigger className="w-full sm:w-[200px]">
+                <ArrowUpDown className="w-4 h-4 mr-2" />
+                <SelectValue placeholder="Sort by" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="date">Sort by Date</SelectItem>
+                <SelectItem value="name">Sort by Name</SelectItem>
+                <SelectItem value="anomalies">Sort by Anomalies</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         {loading ? (
           <Card className="p-12">
             <div className="flex flex-col items-center justify-center space-y-4">
@@ -469,63 +648,99 @@ const HomePage = () => {
               </div>
             </div>
           </Card>
+        ) : filteredAndSortedDatasets.length === 0 && datasets.length > 0 ? (
+          <Card className="p-12">
+            <div className="flex flex-col items-center justify-center space-y-4">
+              <Filter className="w-16 h-16 text-muted-foreground/50" />
+              <div className="text-center">
+                <p className="text-lg font-medium text-foreground">No datasets match your filters</p>
+                <p className="text-muted-foreground">
+                  Try adjusting your filter or sort criteria
+                </p>
+              </div>
+              <Button variant="outline" onClick={() => { setFilterStatus("all"); setSortBy("date"); }}>
+                Clear Filters
+              </Button>
+            </div>
+          </Card>
         ) : (
           <div className="grid gap-4">
-            {datasets.map((dataset) => (
-              <Card
-                key={dataset.id}
-                className="p-6 hover:shadow-lg transition-all duration-200 cursor-pointer"
-                onClick={() => navigate(`/datasets/${dataset.id}`)}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4 flex-1">
-                    <div className="p-3 rounded-lg bg-primary/10">
-                      <FileSpreadsheet className="w-8 h-8 text-primary" />
-                    </div>
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-foreground">
-                        {dataset.filename}
-                      </h3>
-                      <div className="flex items-center space-x-4 mt-1">
-                        <span className="text-sm text-muted-foreground">
-                          Uploaded {formatTime(dataset.uploaded_at)}
-                        </span>
-                        {dataset.file_size && (
-                          <span className="text-sm text-muted-foreground">
-                            {formatFileSize(dataset.file_size)}
-                          </span>
-                        )}
-                        {dataset.anomaly_count !== undefined && dataset.analyzed_at && (
-                          <span className="text-sm font-semibold text-orange-600">
-                            {dataset.anomaly_count} anomalies detected
-                          </span>
-                        )}
+            {filteredAndSortedDatasets.map((dataset) => {
+              const progress = analysisProgress.get(dataset.id);
+              const isAnalyzing = progress && (progress.status === "processing" || progress.status === "pending");
+
+              return (
+                <Card
+                  key={dataset.id}
+                  className="p-6 interactive-card card-hover-bg"
+                  onClick={() => navigate(`/datasets/${dataset.id}`)}
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4 flex-1">
+                        <div className="p-3 rounded-lg bg-primary/10">
+                          <FileSpreadsheet className="w-8 h-8 text-primary" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="text-lg font-semibold text-foreground">
+                            {dataset.filename}
+                          </h3>
+                          <div className="flex items-center space-x-4 mt-1">
+                            <span className="text-sm text-muted-foreground">
+                              Uploaded {formatTime(dataset.uploaded_at)}
+                            </span>
+                            {dataset.file_size && (
+                              <span className="text-sm text-muted-foreground">
+                                {formatFileSize(dataset.file_size)}
+                              </span>
+                            )}
+                            {dataset.anomaly_count !== undefined && dataset.analyzed_at && (
+                              <span className="text-sm font-semibold text-orange-600">
+                                {dataset.anomaly_count} anomalies detected
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        {(() => {
+                          const status = getStatusBadge(dataset);
+                          const StatusIcon = status.icon;
+                          return (
+                            <Badge variant={status.variant} className="flex items-center space-x-1">
+                              <StatusIcon className={`w-4 h-4 ${status.label === "Processing" ? "animate-spin" : ""}`} />
+                              <span>{status.label}</span>
+                            </Badge>
+                          );
+                        })()}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!dataset.analyzed_at}
+                          className="hover-scale"
+                        >
+                          <Eye className="mr-2 h-4 w-4" />
+                          View
+                        </Button>
                       </div>
                     </div>
+
+                    {/* Analysis Progress Bar */}
+                    {isAnalyzing && (
+                      <div className="space-y-2 pt-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground">
+                            {progress.message || "Analyzing dataset..."}
+                          </span>
+                          <span className="font-medium">{progress.progress}%</span>
+                        </div>
+                        <Progress value={progress.progress} className="h-2" />
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center space-x-3">
-                    {(() => {
-                      const status = getStatusBadge(dataset);
-                      const StatusIcon = status.icon;
-                      return (
-                        <Badge variant={status.variant} className="flex items-center space-x-1">
-                          <StatusIcon className={`w-4 h-4 ${status.label === "Processing" ? "animate-spin" : ""}`} />
-                          <span>{status.label}</span>
-                        </Badge>
-                      );
-                    })()}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!dataset.analyzed_at}
-                    >
-                      <Eye className="mr-2 h-4 w-4" />
-                      View
-                    </Button>
-                  </div>
-                </div>
-              </Card>
-            ))}
+                </Card>
+              );
+            })}
           </div>
         )}
         </div>

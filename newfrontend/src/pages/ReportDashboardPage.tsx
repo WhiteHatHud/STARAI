@@ -1,5 +1,4 @@
 import { useState } from "react";
-import MainLayout from "@/components/MainLayout";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -115,8 +114,7 @@ const ReportDashboardPage = () => {
   };
 
   return (
-    <MainLayout>
-      <div className="container max-w-7xl mx-auto p-6 md:p-8">
+    <div className="container max-w-7xl mx-auto p-6 md:p-8">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl md:text-5xl font-bold mb-2">
@@ -150,7 +148,7 @@ const ReportDashboardPage = () => {
             </SelectContent>
           </Select>
 
-          <Button size="lg" onClick={() => navigate("/home")}>
+          <Button size="lg" onClick={() => navigate("/home")} className="button-hover-grow">
             <Plus size={20} />
             Generate New Report
           </Button>
@@ -161,7 +159,7 @@ const ReportDashboardPage = () => {
           {filteredReports.map((report) => (
             <Card
               key={report.id}
-              className="p-6 hover-lift border-2 hover:border-primary cursor-pointer transition-all"
+              className="p-6 interactive-card card-hover-bg border-2"
               onClick={() => navigate(`/reports/${report.id}`)}
             >
               <div className="flex items-start justify-between mb-4">
@@ -256,7 +254,6 @@ const ReportDashboardPage = () => {
           </div>
         )}
       </div>
-    </MainLayout>
   );
 };
 

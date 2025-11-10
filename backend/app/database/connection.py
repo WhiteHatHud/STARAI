@@ -65,6 +65,10 @@ def anomaly_reports_collection():
 def analysis_sessions_collection():
     return get_db().analysis_sessions
 
+@property
+def llm_explanations_collection():
+    return get_db().llm_explanations
+
 # Create a module-level class to hold our lazy properties
 class DatabaseConnections:
     @property
@@ -95,6 +99,10 @@ class DatabaseConnections:
     def analysis_sessions_collection(self):
         return get_db().analysis_sessions
 
+    @property
+    def llm_explanations_collection(self):
+        return get_db().llm_explanations
+
 # Create instance for module-level access
 _connections = DatabaseConnections()
 
@@ -106,6 +114,7 @@ datasets_collection = _connections.datasets_collection
 anomalies_collection = _connections.anomalies_collection
 anomaly_reports_collection = _connections.anomaly_reports_collection
 analysis_sessions_collection = _connections.analysis_sessions_collection
+llm_explanations_collection = _connections.llm_explanations_collection
 
 def reset_database():
     """Drop all collections and reset the database"""
@@ -139,6 +148,7 @@ def create_indexes():
     anomalies_coll = _connections.anomalies_collection
     anomaly_reports_coll = _connections.anomaly_reports_collection
     sessions_coll = _connections.analysis_sessions_collection
+    llm_explanations_coll = _connections.llm_explanations_collection
 
     def index_exists(collection, index_name):
         """Check if an index already exists on a collection"""
@@ -203,6 +213,15 @@ def create_indexes():
     create_index_if_not_exists(sessions_coll, "dataset_id", "dataset_id_1", unique=True)
     create_index_if_not_exists(sessions_coll, "status", "status_1")
     create_index_if_not_exists(sessions_coll, "started_at", "started_at_1")
+
+    # LLM explanations indexes
+    create_index_if_not_exists(llm_explanations_coll, "dataset_id", "dataset_id_1")
+    create_index_if_not_exists(llm_explanations_coll, "anomaly_id", "anomaly_id_1", unique=True)
+    create_index_if_not_exists(llm_explanations_coll, "session_id", "session_id_1")
+    create_index_if_not_exists(llm_explanations_coll, "verdict", "verdict_1")
+    create_index_if_not_exists(llm_explanations_coll, "severity", "severity_1")
+    create_index_if_not_exists(llm_explanations_coll, "status", "status_1")
+    create_index_if_not_exists(llm_explanations_coll, "created_at", "created_at_1")
 
     # Create admin user in development environment
     if ENV == "development" or ENV is None:
