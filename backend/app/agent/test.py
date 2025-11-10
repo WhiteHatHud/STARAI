@@ -1,28 +1,14 @@
-"""Test imports to verify circular dependency is fixed."""
+from app.agent.base_agent import BaseAgent
 
-print("Testing imports...")
+print("Testing BaseAgent...")
 
+# Test Gemini
 try:
-    from app.repositories import AgentRepository, ProviderRepository
-    print("✓ Successfully imported repositories")
-    
-    from app.agent.base_agent import BaseAgent
-    print("✓ Successfully imported BaseAgent")
-    
-    from app.agent.providers import BaseProvider, LangChainProvider, HuggingFaceProvider
-    print("✓ Successfully imported providers")
-    
-    # Test instantiation
-    repo = ProviderRepository()
-    print(f"✓ Supported providers: {repo.get_provider_list()}")
-    
-    # Test agent
+    print("\n1. Testing Gemini...")
     agent = BaseAgent("gemini-2.5-flash")
-    print("✓ BaseAgent instantiated successfully")
+    response = agent.run("What is SQL injection?")
+    print(f"✓ Gemini Response: {response[:100]}...")
+except Exception as e:
+    print(f"✗ Gemini Error: {e}")
     
-    print("\n✅ All imports successful!")
-    
-except ImportError as e:
-    print(f"❌ Import error: {e}")
-    import traceback
-    traceback.print_exc()
+print("\n✅ Testing complete!")

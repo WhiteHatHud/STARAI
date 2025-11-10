@@ -12,8 +12,8 @@ class ProviderRepository:
     PROVIDER_REGISTRY: dict[str, Type[BaseProvider]] = {
         "huggingface": HuggingFaceProvider,
         "gemini": LangChainProvider,
-        # "openai": LangChainProvider,
-        # "anthropic": LangChainProvider,
+        "azure": LangChainProvider,
+        "openai": LangChainProvider,
     }
     
     def get_provider_class(self, provider_name: str) -> Optional[Type[BaseProvider]]:
@@ -42,17 +42,3 @@ class ProviderRepository:
     def is_supported(self, provider_name: str) -> bool:
         """Check if a provider is supported."""
         return provider_name in self.PROVIDER_REGISTRY
-    
-    def register_provider(self, provider_name: str, provider_class: Type[BaseProvider]) -> None:
-        """
-        Register a new provider dynamically.
-        
-        Args:
-            provider_name: Name of the provider
-            provider_class: Provider class (must inherit from BaseProvider)
-        """
-        if not issubclass(provider_class, BaseProvider):
-            raise TypeError(f"{provider_class} must inherit from BaseProvider")
-        
-        self.PROVIDER_REGISTRY[provider_name] = provider_class
-        logger.info(f"Registered new provider: {provider_name}")

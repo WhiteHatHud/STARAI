@@ -63,7 +63,7 @@ app.include_router(user_routes.admin_router, prefix="/api", tags=["Admin"])
 # Anomaly Detection Routes (Main System)
 app.include_router(anomaly_routes.router, prefix="/api/anomaly", tags=["Anomaly Detection"])
 
-app.include_router(agents_routes.router, prefix="/api/models", tags=["Models"])
+app.include_router(agents_routes.router, prefix="/api/agents", tags=["agents"])
 
 if APP_ENV == "production" or APP_ENV == "test":
     # Serve React static files

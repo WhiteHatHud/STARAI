@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class HuggingFaceProvider(BaseProvider):
     """HuggingFace transformers provider."""
     
-    def __init__(self, model: str, config: Dict[str, Any], system_prompt: str = "You are a helpful AI assistant."):
+    def __init__(self, model_id: str, config: Dict[str, Any], system_prompt: str = "You are a helpful AI assistant."):
         """
         Initialize HuggingFace provider.
         
@@ -19,23 +19,23 @@ class HuggingFaceProvider(BaseProvider):
             config: Configuration from models.json
             system_prompt: System prompt from prompt.yaml
         """
-        super().__init__(model, config, system_prompt)
+        super().__init__(model_id, config, system_prompt)
         
         self.device = self._resolve_device("auto")
         
-        logger.info(f"Loading HuggingFace model: {model} on {self.device}")
+        logger.info(f"Loading HuggingFace model: {model_id} on {self.device}")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(model)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model,
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.hf_model = AutoModelForCausalLM.from_pretrained(
+            model_id,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
             device_map="auto" if self.device == "cuda" else None
         )
         
         if self.device != "cuda":
-            self.model = self.model.to(self.device)
+            self.hf_model = self.hf_model.to(self.device)
         
-        logger.info(f"Initialized HuggingFace provider for model: {model}")
+        logger.info(f"Initialized HuggingFace provider for model: {model_id}")
     
     def _resolve_device(self, device: str) -> str:
         """Resolve device string to actual device."""
@@ -87,7 +87,7 @@ class HuggingFaceProvider(BaseProvider):
         generation_args = {k: v for k, v in generation_args.items() if v is not None}
 
         with torch.inference_mode():
-            output = self.model.generate(**inputs, **generation_args)
+            output = self.hf_model.generate(**inputs, **generation_args)
 
         response = self.tokenizer.decode(
             output[0][inputs["input_ids"].shape[1]:], 

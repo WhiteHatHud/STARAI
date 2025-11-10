@@ -11,7 +11,12 @@ logger = logging.getLogger(__name__)
 class LangChainProvider(BaseProvider):
     """LangChain-based provider supporting multiple LLM APIs."""
     
-    def __init__(self, model: str, config: Dict[str, Any], system_prompt: str = "You are a helpful AI assistant."):
+    def __init__(
+        self, 
+        model_id: str, 
+        config: Dict[str, Any], 
+        system_prompt: str = "You are a helpful AI assistant."
+    ):
         """
         Initialize LangChain provider.
         
@@ -20,47 +25,28 @@ class LangChainProvider(BaseProvider):
             config: Configuration from models.json
             system_prompt: System prompt from prompt.yaml
         """
-        super().__init__(model, config, system_prompt)
+        super().__init__(model_id, config, system_prompt)
         
         self.env_config = load_config()
         self.provider_name = config.get("provider")
         
         if not self.provider_name:
-            raise ValueError(f"No provider specified in config for model {model}")
+            raise ValueError(f"No provider specified in config for model {model_id}")
         
-        # Initialize client using ProviderUtils
+        # Initialize provider utils and client
+        self.provider_utils = ProviderUtils(self.env_config)
         self.client = self._initialize_client()
         self._setup_prompt()
         
-        logger.info(f"Initialized {self.provider_name} LangChain provider for model: {model}")
+        logger.info(f"Initialized {self.provider_name} provider for model: {model_id}")
 
     def _initialize_client(self) -> Any:
-        """Initialize the appropriate LangChain chat model."""
-        # Get provider class and default params from ProviderUtils
-        provider_class, params = ProviderUtils.get_provider_class(
-            self.provider_name, 
-            self.env_config
+        """Initialize the appropriate LangChain chat model using factory pattern."""
+        return self.provider_utils.get_provider_instance(
+            provider_name=self.provider_name,
+            model_id=self.model_id,
+            config=self.config
         )
-        
-        # Override with model-specific config
-        params["model"] = self.model
-        params["temperature"] = self.config.get("temperature", params.get("temperature", 0.7))
-        
-        # Handle provider-specific parameters
-        if self.provider_name == "gemini":
-            params["max_output_tokens"] = self.config.get("max_output_tokens", None)
-        elif self.provider_name in ["openai", "anthropic"]:
-            max_tokens = self.config.get("max_tokens")
-            if max_tokens:
-                params["max_tokens"] = max_tokens
-            # Remove gemini-specific param
-            params.pop("max_output_tokens", None)
-        
-        # Instantiate client
-        client = provider_class(**params)
-        logger.info(f"Initialized {provider_class.__name__} for model: {self.model}")
-        
-        return client
 
     def _setup_prompt(self) -> None:
         """Setup prompt template based on system_prompt configuration."""

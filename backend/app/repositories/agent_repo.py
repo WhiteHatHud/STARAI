@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 class AgentRepository:
     """Repository for managing agent/model configurations."""
     
-    _MODELS_PATH: Path = "./agent/models.json"
+    _MODELS_PATH: Path = "./app/agent/models.json"
 
     def _load_models(self) -> Dict[str, Any]:
         """Load all models from models.json."""

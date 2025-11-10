@@ -1,13 +1,21 @@
 from fastapi import APIRouter, HTTPException, status
-from typing import Optional, List, Dict, Any
+from typing import List
 from app.repositories.agent_repo import AgentRepository
+from app.repositories.provider_repo import ProviderRepository
 import logging
-from app.models.agent_schema import ModelCreate, ModelInfo, ModelUpdate, AgentRunRequest, AgentRunResponse
+from app.models.agent_schema import (
+    ModelCreate, 
+    ModelInfo, 
+    ModelUpdate, 
+    AgentRunRequest, 
+    AgentRunResponse
+)
 from app.agent.base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
 
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent(request: AgentRunRequest):
@@ -15,16 +23,25 @@ async def run_agent(request: AgentRunRequest):
     Run an AI agent with the given prompt.
     
     Args:
-        request: Agent run request with model_id and prompt
+        request: Agent run request with model_id, prompt, and optional parameters
         
     Returns:
         Agent response with generated text
+        
+    Example:
+        POST /agents/run
+        {
+            "model_id": "gpt-5-mini",
+            "prompt": "What is a DDoS attack?",
+            "system": "You are a cybersecurity expert.",
+            "temperature": 0.2
+        }
     """
     try:
         # Initialize agent
         agent = BaseAgent(request.model_id)
         
-        # Build kwargs for generation
+        # Build generation parameters
         gen_kwargs = {}
         if request.system:
             gen_kwargs["system"] = request.system
@@ -48,11 +65,12 @@ async def run_agent(request: AgentRunRequest):
         config = agent_repo.load_agent(request.model_id)
         provider = config.get("provider", "unknown")
 
-        return {
-            "model_id": request.model_id,
-            "prompt": request.prompt,
-            "response": response,
-        }
+        return AgentRunResponse(
+            model_id=request.model_id,
+            prompt=request.prompt,
+            response=response,
+            provider=provider
+        )
         
     except ValueError as e:
         logger.error(f"Validation error: {e}")
@@ -68,12 +86,22 @@ async def run_agent(request: AgentRunRequest):
         )
 
 
-@router.get("/", response_model=List[str])
+@router.get("/models", response_model=List[str])
 async def list_models():
-    """Get list of all available models."""
+    """
+    Get list of all available models.
+    
+    Returns:
+        List of model IDs
+        
+    Example:
+        GET /agents/models
+        ["gpt-5-mini", "gemini-2.5-flash", "gpt-4o"]
+    """
     try:
         repo = AgentRepository()
         models = repo.list_models()
+        logger.info(f"Retrieved {len(models)} models")
         return models
     except Exception as e:
         logger.error(f"Error listing models: {e}")
@@ -82,9 +110,21 @@ async def list_models():
             detail=str(e)
         )
 
-@router.get("/{model_id}", response_model=ModelInfo)
+
+@router.get("/models/{model_id}", response_model=ModelInfo)
 async def get_model(model_id: str):
-    """Get information about a specific model."""
+    """
+    Get information about a specific model.
+    
+    Args:
+        model_id: Model identifier
+        
+    Returns:
+        Model configuration details
+        
+    Example:
+        GET /agents/models/gpt-5-mini
+    """
     try:
         repo = AgentRepository()
         model_info = repo.get_model_info(model_id)
@@ -101,13 +141,65 @@ async def get_model(model_id: str):
             detail=str(e)
         )
 
-@router.get("/provider/{provider}", response_model=List[str])
-async def get_models_by_provider(provider: str):
-    """Get all models for a specific provider."""
+
+@router.get("/providers", response_model=List[str])
+async def list_providers():
+    """
+    Get list of all supported providers.
+    
+    Returns:
+        List of provider names
+        
+    Example:
+        GET /agents/providers
+        ["gemini", "openai", "azure", "anthropic", "huggingface"]
+    """
     try:
-        repo = AgentRepository()
-        models = repo.get_models_by_provider(provider)
+        repo = ProviderRepository()
+        providers = repo.get_provider_list()
+        logger.info(f"Retrieved {len(providers)} providers")
+        return providers
+    except Exception as e:
+        logger.error(f"Error listing providers: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/providers/{provider}/models", response_model=List[str])
+async def get_models_by_provider(provider: str):
+    """
+    Get all models for a specific provider.
+    
+    Args:
+        provider: Provider name (gemini, openai, azure, anthropic, huggingface)
+        
+    Returns:
+        List of model IDs for the provider
+        
+    Example:
+        GET /agents/providers/azure/models
+        ["gpt-5-mini", "gpt-4-turbo"]
+    """
+    try:
+        # Validate provider exists
+        provider_repo = ProviderRepository()
+        if not provider_repo.is_supported(provider):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Provider '{provider}' not supported. Available: {provider_repo.get_provider_list()}"
+            )
+        
+        # Get models for provider
+        agent_repo = AgentRepository()
+        models = agent_repo.get_models_by_provider(provider)
+        
+        logger.info(f"Found {len(models)} models for provider: {provider}")
         return models
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting models by provider: {e}")
         raise HTTPException(
@@ -115,21 +207,112 @@ async def get_models_by_provider(provider: str):
             detail=str(e)
         )
 
-@router.put("/{model_id}")
+
+@router.post("/models", status_code=status.HTTP_201_CREATED)
+async def create_model(model: ModelCreate):
+    """
+    Add a new model configuration.
+    
+    Args:
+        model: Model configuration
+        
+    Returns:
+        Success message with model_id
+        
+    Example:
+        POST /agents/models
+        {
+            "model_id": "claude-3-opus",
+            "provider": "anthropic",
+            "system_prompt": true,
+            "temperature": 0.7,
+            "max_tokens": 4096
+        }
+    """
+    try:
+        # Validate provider is supported
+        provider_repo = ProviderRepository()
+        if not provider_repo.is_supported(model.provider):
+            raise ValueError(
+                f"Provider '{model.provider}' not supported. "
+                f"Available: {provider_repo.get_provider_list()}"
+            )
+        
+        # Add model
+        repo = AgentRepository()
+        repo.add_model(
+            model_id=model.model_id,
+            provider=model.provider,
+            system_prompt=model.system_prompt,
+            temperature=model.temperature,
+            max_tokens=model.max_tokens
+        )
+        
+        logger.info(f"Created model: {model.model_id} with provider: {model.provider}")
+        
+        return {
+            "message": f"Model '{model.model_id}' created successfully",
+            "model_id": model.model_id,
+            "provider": model.provider
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error creating model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.put("/models/{model_id}")
 async def update_model(model_id: str, model: ModelUpdate):
-    """Update an existing model configuration."""
+    """
+    Update an existing model configuration.
+    
+    Args:
+        model_id: Model identifier
+        model: Updated configuration (only provided fields will be updated)
+        
+    Returns:
+        Success message
+        
+    Example:
+        PUT /agents/models/gpt-5-mini
+        {
+            "temperature": 0.1,
+            "max_tokens": 8192
+        }
+    """
     try:
         repo = AgentRepository()
         
-        # Build update dict
+        # Validate provider if being updated
+        if model.provider:
+            provider_repo = ProviderRepository()
+            if not provider_repo.is_supported(model.provider):
+                raise ValueError(
+                    f"Provider '{model.provider}' not supported. "
+                    f"Available: {provider_repo.get_provider_list()}"
+                )
+        
+        # Build update dict (exclude None values)
         update_data = model.model_dump(exclude_none=True)
         
         repo.update_model(model_id=model_id, **update_data)
         
+        logger.info(f"Updated model: {model_id}")
+        
         return {
             "message": f"Model '{model_id}' updated successfully",
-            "model_id": model_id
+            "model_id": model_id,
+            "updated_fields": list(update_data.keys())
         }
+        
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -142,12 +325,26 @@ async def update_model(model_id: str, model: ModelUpdate):
             detail=str(e)
         )
 
-@router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
+
+@router.delete("/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_model(model_id: str):
-    """Delete a model configuration."""
+    """
+    Delete a model configuration.
+    
+    Args:
+        model_id: Model identifier
+        
+    Returns:
+        No content (204)
+        
+    Example:
+        DELETE /agents/models/old-model
+    """
     try:
         repo = AgentRepository()
         repo.delete_model(model_id)
+        logger.info(f"Deleted model: {model_id}")
+        
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -160,30 +357,34 @@ async def delete_model(model_id: str):
             detail=str(e)
         )
 
-@router.post("/add", status_code=status.HTTP_201_CREATED)
-async def create_model(model: ModelCreate):
-    """Add a new model configuration."""
+
+@router.get("/agent-health")
+async def health_check():
+    """
+    Health check endpoint for agent service.
+    
+    Returns:
+        Service status and available models/providers count
+    """
     try:
-        repo = AgentRepository()
-        repo.add_model(
-            model_id=model.model_id,
-            provider=model.provider,
-            system_prompt=model.system_prompt,
-            temperature=model.temperature,
-            max_tokens=model.max_tokens
-        )
+        agent_repo = AgentRepository()
+        provider_repo = ProviderRepository()
+        
+        models = agent_repo.list_models()
+        providers = provider_repo.get_provider_list()
+        
         return {
-            "message": f"Model '{model.model_id}' created successfully",
-            "model_id": model.model_id
+            "status": "healthy",
+            "service": "agents",
+            "models_count": len(models),
+            "providers_count": len(providers),
+            "available_providers": providers
         }
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        
     except Exception as e:
-        logger.error(f"Error creating model: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "agents",
+            "error": str(e)
+        }
