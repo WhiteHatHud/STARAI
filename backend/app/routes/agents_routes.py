@@ -38,8 +38,11 @@ async def run_agent(request: AgentRunRequest):
         }
     """
     try:
+        model_id = request.model_id or "gpt-5-mini"
+        logger.info(f"Running agent with model: {model_id}")
+        
         # Initialize agent
-        agent = BaseAgent(request.model_id)
+        agent = BaseAgent(model_id)
         
         # Build generation parameters
         gen_kwargs = {}
@@ -66,7 +69,7 @@ async def run_agent(request: AgentRunRequest):
         provider = config.get("provider", "unknown")
 
         return AgentRunResponse(
-            model_id=request.model_id,
+            model_id=model_id,
             prompt=request.prompt,
             response=response,
             provider=provider

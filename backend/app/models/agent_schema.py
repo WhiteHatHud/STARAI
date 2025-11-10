@@ -33,7 +33,7 @@ class ModelInfo(BaseModel):
 
 class AgentRunRequest(BaseModel):
     """Schema for agent run request."""
-    model_id: str = Field(..., description="Model identifier to use")
+    model_id: Optional[str] = Field(default="gpt-5-mini", description="Model identifier to use")
     prompt: str = Field(..., description="User prompt/question")
     system_prompt: Optional[str] = Field(None, description="Optional system prompt override")
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature setting")

@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class BaseAgent:
-    def __init__(self, model_id: str = "gemini-2.5-flash"):
+    def __init__(self, model_id: str = "gpt-5-mini"):
         
         self.agent = AgentRepository()
         self.provider = ProviderRepository()

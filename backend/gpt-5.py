@@ -8,7 +8,7 @@ from app.repositories.agent_repo import AgentRepository
 INPUT_CSV = "BETH_anomaly.csv"                # your anomalies file (TSV or CSV)
 OUTPUT_JSONL = "BETH_llm_explanations.jsonl"  # only JSON explanations
 MAX_ROWS = 200                                # safety limit
-MODEL_ID ="gpt-5-mini"
+MODEL_ID = "gpt-5-mini"
 
 def load_beth_csv(path: str) -> pd.DataFrame:
     """Load BETH anomaly CSV/TSV file."""
