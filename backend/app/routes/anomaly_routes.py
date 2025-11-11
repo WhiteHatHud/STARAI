@@ -45,7 +45,7 @@ router = APIRouter()
 # DATASET ROUTES
 # ============================================================================
 
-@router.post("/datasets/upload", response_model=DatasetModel, status_code=201)
+@router.post("/datasets/upload", response_model=DatasetModel, response_model_by_alias=False, status_code=201)
 async def upload_dataset(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
@@ -99,6 +99,7 @@ async def upload_dataset(
         # TODO: Trigger async analysis pipeline (Celery task)
         # analyze_dataset_task.delay(dataset.id)
 
+        # Return with proper serialization (use field names, not aliases)
         return dataset
 
     except ValueError as e:
@@ -135,7 +136,7 @@ async def get_user_datasets(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve datasets: {str(e)}")
 
 
-@router.get("/datasets/{dataset_id}", response_model=DatasetModel)
+@router.get("/datasets/{dataset_id}", response_model=DatasetModel, response_model_by_alias=False)
 async def get_dataset(
     dataset_id: str,
     current_user: User = Depends(get_current_user)
@@ -465,13 +466,20 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
 
         logger.info(f"Analysis complete for dataset {dataset_id}: {stored_count} top anomalies stored (Total: {results['anomaly_count']})")
 
-        # Cleanup temp dataset file
-        try:
-            if os.path.exists(dataset_path):
-                os.remove(dataset_path)
-                logger.info(f"Cleaned up temp file: {dataset_path}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup temp file: {str(e)}")
+        # NOTE: NOT cleaning up temp files to allow LLM analysis to access them
+        # The results directory at {output_dir} and input file at {dataset_path}
+        # will be preserved for the LLM triage step
+        logger.info(f"Preserving temp files for LLM analysis:")
+        logger.info(f"  - Input dataset: {dataset_path}")
+        logger.info(f"  - Results directory: {output_dir}")
+
+        # # Cleanup temp dataset file (DISABLED - files needed for LLM analysis)
+        # try:
+        #     if os.path.exists(dataset_path):
+        #         os.remove(dataset_path)
+        #         logger.info(f"Cleaned up temp file: {dataset_path}")
+        # except Exception as e:
+        #     logger.warning(f"Failed to cleanup temp file: {str(e)}")
 
     except Exception as e:
         logger.error(f"Error in background autoencoder task: {str(e)}", exc_info=True)
@@ -863,39 +871,35 @@ async def health_check():
 @router.post("/datasets/{dataset_id}/start-llm-analysis")
 async def start_llm_triage_analysis(
     dataset_id: str,
-    max_anomalies: int = Query(default=2, ge=1, le=500, description="Maximum number of anomalies to analyze (default: 2 for faster testing)"),
+    use_all_anomalies: bool = Query(default=False, description="Use full results CSV instead of top 2"),
     current_user: User = Depends(get_current_user)
 ):
     """
-    STEP 3: Start LLM triage analysis on detected anomalies.
+    STEP 3: Start LLM triage analysis on detected anomalies using gpt-5.py.
 
     This endpoint:
     1. Verifies dataset has status 'analyzed' (autoencoder completed)
-    2. Fetches all detected anomalies for the dataset
-    3. Sorts anomalies by score (highest/most suspicious first)
-    4. Sends top N anomalies to Azure OpenAI GPT-5-mini for triage analysis
-    5. Stores the LLM explanations in the database
-    6. Updates dataset status to 'completed'
-    7. Returns summary of analysis
+    2. Finds the CSV file in /tmp/results_{dataset_id}/
+    3. Runs backend/gpt-5.py script with the CSV file as input
+    4. Reads the output JSONL file with LLM explanations
+    5. Stores each explanation in the database (llm_explanations collection)
+    6. Cleans up all tmp files after storing in database
+    7. Updates dataset status to 'completed'
+    8. Returns summary of analysis
 
-    By default, only analyzes top 2 anomalies for faster testing and lower token usage.
-    Increase max_anomalies parameter for production use.
+    By default uses top_2_critical.csv. Set use_all_anomalies=true for new_test_results.csv.
 
-    Call this AFTER /datasets/{dataset_id}/start-autoencoder completes.
+    Frontend should fetch explanations from GET /api/anomaly/datasets/{dataset_id}/llm-explanations
 
     Requires Azure OpenAI to be configured in environment variables.
     """
+    import subprocess
+    import tempfile
+    import os
+    import json
+    from pathlib import Path
+
     try:
-        from app.utils.llm_triage import analyze_anomaly_with_llm, AZURE_CONFIGURED
-
-        if not AZURE_CONFIGURED:
-            raise HTTPException(
-                status_code=500,
-                detail="Azure OpenAI is not configured. Please set AZURE_OPENAI_ENDPOINT, "
-                       "AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT, and AZURE_OPENAI_API_VERSION "
-                       "environment variables."
-            )
-
         # Get dataset and verify ownership
         dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
         if not dataset:
@@ -906,7 +910,7 @@ async def start_llm_triage_analysis(
             raise HTTPException(
                 status_code=400,
                 detail=f"Dataset must be analyzed first. Current status: {dataset.status}. "
-                       f"Call /datasets/{dataset_id}/start-autoencoder first."
+                       f"Call /datasets/{dataset_id}/analyze first."
             )
 
         # Update status to 'triaging'
@@ -917,97 +921,174 @@ async def start_llm_triage_analysis(
 
         logger.info(f"Starting LLM triage analysis for dataset {dataset_id}")
 
-        # Get all anomalies for this dataset
-        anomalies = await anomaly_repo.get_dataset_anomalies(
-            dataset_id=dataset_id,
-            current_user=current_user
-        )
+        # Determine CSV file path
+        temp_dir = tempfile.gettempdir()
+        results_dir = os.path.join(temp_dir, f"results_{dataset_id}")
 
-        if not anomalies:
+        if use_all_anomalies:
+            csv_filename = "new_test_results.csv"
+        else:
+            csv_filename = "top_2_critical.csv"
+
+        csv_path = os.path.join(results_dir, csv_filename)
+
+        # Check if CSV exists
+        if not os.path.exists(csv_path):
             raise HTTPException(
                 status_code=404,
-                detail="No anomalies found for this dataset. Run anomaly detection first."
+                detail=f"CSV file not found: {csv_path}. Ensure autoencoder analysis completed successfully."
             )
 
-        # Sort anomalies by score (highest/most suspicious first)
-        anomalies_sorted = sorted(anomalies, key=lambda x: x.anomaly_score, reverse=True)
-        logger.info(f"Found {len(anomalies_sorted)} anomalies. Scores range: {anomalies_sorted[0].anomaly_score:.4f} to {anomalies_sorted[-1].anomaly_score:.4f}")
+        logger.info(f"Using CSV file: {csv_path}")
 
-        # Limit to top N anomalies for LLM analysis
-        if len(anomalies_sorted) > max_anomalies:
-            logger.info(f"Limiting LLM analysis to top {max_anomalies} highest-scoring anomalies (total: {len(anomalies_sorted)})")
-            anomalies_to_analyze = anomalies_sorted[:max_anomalies]
+        # Prepare output JSONL path
+        output_jsonl = os.path.join(results_dir, "llm_explanations.jsonl")
+
+        # Find gpt-5.py script
+        # __file__ is /app/app/routes/anomaly_routes.py
+        # parent.parent.parent gives /app/
+        backend_dir = Path(__file__).resolve().parent.parent.parent
+        gpt5_script = backend_dir / "gpt-5.py"
+
+        if not gpt5_script.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"gpt-5.py script not found at: {gpt5_script}"
+            )
+
+        logger.info(f"Running gpt-5.py with INPUT_CSV={csv_path}")
+
+        # Run gpt-5.py script as subprocess
+        # Pass INPUT_CSV and OUTPUT_JSONL as environment variables
+        env = os.environ.copy()
+        env["INPUT_CSV"] = csv_path
+        env["OUTPUT_JSONL"] = output_jsonl
+
+        result = subprocess.run(
+            ["python", str(gpt5_script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
+        )
+
+        if result.returncode != 0:
+            logger.error(f"gpt-5.py failed with return code {result.returncode}")
+            logger.error(f"stdout: {result.stdout}")
+            logger.error(f"stderr: {result.stderr}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"LLM analysis failed: {result.stderr}"
+            )
+
+        logger.info(f"gpt-5.py completed successfully")
+        logger.info(f"Output: {result.stdout}")
+
+        # Read output JSONL file and store in database
+        explanations_count = 0
+        stored_count = 0
+
+        if not os.path.exists(output_jsonl):
+            logger.warning(f"Output JSONL not found: {output_jsonl}")
         else:
-            anomalies_to_analyze = anomalies_sorted
+            logger.info(f"Reading and storing explanations from: {output_jsonl}")
 
-        logger.info(f"Analyzing {len(anomalies_to_analyze)} anomalies with LLM (scores: {[f'{a.anomaly_score:.4f}' for a in anomalies_to_analyze]})")
+            with open(output_jsonl, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    try:
+                        explanation_data = json.loads(line)
+                        explanations_count += 1
 
-        # Process each anomaly
-        explanations_created = 0
-        explanations_skipped = 0
-        errors = []
+                        # Enrich explanation with dataset_id and session context
+                        explanation_data["dataset_id"] = dataset_id
 
-        for anomaly in anomalies_to_analyze:
-            try:
-                # Check if explanation already exists
-                existing_explanation = await anomaly_repo.get_llm_explanation_by_anomaly_id(anomaly.id)
+                        # Generate unique anomaly_id if not present
+                        if not explanation_data.get("anomaly_id"):
+                            explanation_data["anomaly_id"] = f"{dataset_id}_anomaly_{line_num}"
 
-                if existing_explanation:
-                    logger.debug(f"Skipping anomaly {anomaly.id} - explanation already exists")
-                    explanations_skipped += 1
-                    continue
+                        # Add session_id if available
+                        if not explanation_data.get("session_id"):
+                            explanation_data["session_id"] = None
 
-                # Prepare anomaly data for LLM
-                anomaly_data = {
-                    "timestamp": anomaly.detected_at.isoformat() if anomaly.detected_at else None,
-                    "anomaly_score": anomaly.anomaly_score,
-                    "row_index": anomaly.row_index,
-                    "sheet_name": anomaly.sheet_name,
-                    "raw_data": anomaly.raw_data,
-                    "anomalous_features": [f.model_dump() for f in anomaly.anomalous_features] if anomaly.anomalous_features else [],
-                }
+                        # Ensure created_at timestamp is set
+                        if not explanation_data.get("_created_at"):
+                            explanation_data["_created_at"] = datetime.utcnow()
 
-                # Call LLM
-                explanation_data = analyze_anomaly_with_llm(
-                    anomaly_data=anomaly_data,
-                    dataset_id=dataset_id,
-                    anomaly_id=anomaly.id,
-                    session_id=None
-                )
+                        # Store in database (returns inserted_id)
+                        inserted_id = await anomaly_repo.create_llm_explanation(explanation_data)
+                        stored_count += 1
+                        logger.debug(f"Stored explanation {line_num} with ID: {inserted_id}")
 
-                # Store explanation
-                await anomaly_repo.create_llm_explanation(explanation_data)
-                explanations_created += 1
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse JSONL line {line_num}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to store explanation {line_num} in database: {e}", exc_info=True)
 
-                if explanations_created % 10 == 0:
-                    logger.info(f"Processed {explanations_created}/{len(anomalies_to_analyze)} anomalies")
+            logger.info(f"Stored {stored_count}/{explanations_count} explanations in database")
 
-            except Exception as e:
-                error_msg = f"Error analyzing anomaly {anomaly.id}: {str(e)}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-                # Continue with next anomaly
+        # Clean up tmp files after storing in database
+        cleanup_success = True
+        try:
+            # Clean up JSONL output file
+            if os.path.exists(output_jsonl):
+                os.remove(output_jsonl)
+                logger.info(f"Cleaned up: {output_jsonl}")
 
-        logger.info(f"LLM analysis complete: {explanations_created} created, {explanations_skipped} skipped, {len(errors)} errors")
+            # Clean up CSV file used for LLM analysis
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+                logger.info(f"Cleaned up: {csv_path}")
+
+            # Clean up dataset CSV file from autoencoder analysis
+            temp_dir = tempfile.gettempdir()
+            dataset_csv = os.path.join(temp_dir, f"dataset_{dataset_id}.csv")
+            if os.path.exists(dataset_csv):
+                os.remove(dataset_csv)
+                logger.info(f"Cleaned up dataset file: {dataset_csv}")
+
+            # Clean up other files in results directory
+            if os.path.exists(results_dir):
+                for filename in os.listdir(results_dir):
+                    file_path = os.path.join(results_dir, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            logger.info(f"Cleaned up: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove {file_path}: {e}")
+
+                # Remove the results directory itself
+                try:
+                    os.rmdir(results_dir)
+                    logger.info(f"Cleaned up directory: {results_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove directory {results_dir}: {e}")
+                    cleanup_success = False
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            cleanup_success = False
 
         # Update dataset status to COMPLETED
         await anomaly_repo.update_dataset(
             dataset_id=dataset_id,
             updates={
                 "status": "completed",
-                "triaged_at": datetime.utcnow()
+                "triaged_at": datetime.utcnow(),
+                "llm_explanations_count": stored_count
             }
         )
 
+        logger.info(f"LLM analysis complete: {stored_count} explanations stored in database")
+
         return {
             "dataset_id": dataset_id,
-            "total_anomalies_detected": len(anomalies_sorted),
-            "anomalies_analyzed_by_llm": len(anomalies_to_analyze),
-            "explanations_created": explanations_created,
-            "explanations_skipped": explanations_skipped,
-            "errors": errors[:10],  # Limit errors in response
-            "status": "completed" if len(errors) == 0 else "completed_with_errors",
-            "note": f"Analyzed top {len(anomalies_to_analyze)} highest-scoring anomalies out of {len(anomalies_sorted)} total"
+            "status": "completed",
+            "explanations_generated": explanations_count,
+            "explanations_stored": stored_count,
+            "csv_file_used": csv_filename,
+            "tmp_files_cleaned": cleanup_success,
+            "message": f"LLM analysis complete. {stored_count} explanations stored in database.",
+            "next_steps": f"Fetch explanations from GET /api/anomaly/datasets/{dataset_id}/llm-explanations"
         }
 
     except HTTPException:

@@ -691,7 +691,7 @@ async def get_user_statistics(current_user: User) -> dict:
 
 async def create_llm_explanation(
     explanation_data: dict
-) -> LLMExplanation:
+):
     """
     Store an LLM-generated explanation for an anomaly.
 
@@ -699,7 +699,10 @@ async def create_llm_explanation(
         explanation_data: Dictionary containing the LLM analysis
 
     Returns:
-        LLMExplanation model instance
+        Inserted document ID as string
+
+    Note: Does not validate against LLMExplanation model to handle
+    incomplete LLM responses gracefully.
     """
     # Ensure timestamps are set
     if "_created_at" not in explanation_data:
@@ -710,10 +713,9 @@ async def create_llm_explanation(
         explanation_data["_id"] = ObjectId(explanation_data["_id"])
 
     result = llm_explanations_collection.insert_one(explanation_data)
-    explanation_data["_id"] = str(result.inserted_id)
 
     logger.info(f"Created LLM explanation for anomaly {explanation_data.get('anomaly_id')}")
-    return LLMExplanation.model_validate(explanation_data)
+    return str(result.inserted_id)
 
 
 async def get_llm_explanation_by_anomaly_id(

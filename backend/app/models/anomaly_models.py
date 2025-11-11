@@ -77,7 +77,6 @@ class DatasetModel(BaseModel):
     model_config = {
         "populate_by_name": True,
         "json_encoders": {ObjectId: str},
-        "by_alias": False,  # Use field names, not aliases in responses
         "json_schema_extra": {
             "example": {
                 "id": "673abcd1234567890abcdef0",

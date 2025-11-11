@@ -191,6 +191,39 @@ export class StarAIClient {
       }>(`/anomaly/datasets/${id}/status`);
       return response.data;
     },
+
+    // Start LLM analysis (triage)
+    startLLMAnalysis: async (id: string, useAllAnomalies: boolean = false): Promise<{
+      dataset_id: string;
+      status: string;
+      explanations_generated: number;
+      explanations_stored: number;
+      message: string;
+    }> => {
+      const response = await this.axios.post<{
+        dataset_id: string;
+        status: string;
+        explanations_generated: number;
+        explanations_stored: number;
+        message: string;
+      }>(`/anomaly/datasets/${id}/start-llm-analysis`, null, {
+        params: { use_all_anomalies: useAllAnomalies }
+      });
+      return response.data;
+    },
+
+    // Get LLM explanations for a dataset
+    getLLMExplanations: async (id: string, options?: {
+      verdict?: string;
+      severity?: string;
+      limit?: number;
+    }): Promise<any[]> => {
+      const response = await this.axios.get<any[]>(
+        `/anomaly/datasets/${id}/llm-explanations`,
+        { params: options }
+      );
+      return response.data;
+    },
   };
 
   // ============================================

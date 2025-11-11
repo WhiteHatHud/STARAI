@@ -1,113 +1,44 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Upload,
+  FolderOpen,
+  Zap,
   FileSpreadsheet,
   CheckCircle,
   AlertCircle,
   Loader2,
   Eye,
-  Trash2,
-  Filter,
-  ArrowUpDown,
+  Download,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
-import axios from "@/lib/axios";
 import useStore from "@/store";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { StarAIClient } from "@/lib/api-client";
+import { createClient } from "@/lib/api-client";
 
-interface Dataset {
+interface UploadedFile {
   id: string;
-  filename: string;
-  uploaded_at: string;
-  status?: string;
-  analysis_status?: "pending" | "processing" | "completed" | "failed";
-  analyzed_at?: string;
-  anomaly_count?: number;
-  file_size?: number;
-}
-
-interface AnalysisProgress {
-  datasetId: string;
-  progress: number;
-  status: string;
-  message?: string;
+  name: string;
+  uploadTime: Date;
+  status: "uploading" | "uploaded" | "autoencoding" | "autoencoded" | "analyzing" | "analyzed" | "failed";
 }
 
 const HomePage = () => {
   const navigate = useNavigate();
   const { user, token } = useStore();
   const [dragActive, setDragActive] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [deleting, setDeleting] = useState(false);
-  const [analysisProgress, setAnalysisProgress] = useState<Map<string, AnalysisProgress>>(new Map());
-  const [filterStatus, setFilterStatus] = useState<string>("all");
-  const [sortBy, setSortBy] = useState<string>("date");
-  const dataFetchedRef = useRef(false);
-  const pollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
 
-  // Create API client instance
-  const apiClient = new StarAIClient({
-    baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api",
-    getToken: () => token,
-  });
-
-  // Fetch all uploaded datasets
-  const fetchDatasets = useCallback(async () => {
-    if (dataFetchedRef.current) return;
-
-    setLoading(true);
-    try {
-      const response = await axios.get("/anomaly/datasets");
-
-      // Sort by upload date (newest first)
-      const sortedDatasets = (response.data || []).sort(
-        (a: Dataset, b: Dataset) =>
-          new Date(b.uploaded_at).getTime() - new Date(a.uploaded_at).getTime()
-      );
-
-      setDatasets(sortedDatasets);
-      dataFetchedRef.current = true;
-    } catch (error) {
-      console.error("Error fetching datasets:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load uploaded datasets",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchDatasets();
-  }, [fetchDatasets]);
+  // Create API client with token
+  const apiClient = useMemo(() => {
+    return createClient({
+      baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api",
+      getToken: () => token,
+    });
+  }, [token]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -125,645 +56,510 @@ const HomePage = () => {
     setDragActive(false);
 
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      handleUpload(files[0]);
-    }
+    handleFiles(files);
   }, []);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleUpload(e.target.files[0]);
+    if (e.target.files) {
+      const files = Array.from(e.target.files);
+      handleFiles(files);
     }
   };
 
-  // Stop polling for a specific dataset
-  const stopPolling = useCallback((datasetId: string) => {
-    const interval = pollingIntervalsRef.current.get(datasetId);
-    if (interval) {
-      clearInterval(interval);
-      pollingIntervalsRef.current.delete(datasetId);
-    }
-  }, []);
+  const handleFiles = async (files: File[]) => {
+    for (const file of files) {
+      if (file.name.endsWith(".xlsx") || file.name.endsWith(".csv")) {
+        const newFile: UploadedFile = {
+          id: Date.now().toString() + Math.random(),
+          name: file.name,
+          uploadTime: new Date(),
+          status: "uploading",
+        };
 
-  // Poll analysis progress
-  const pollAnalysisProgress = useCallback(async (datasetId: string) => {
-    try {
-      const statusData = await apiClient.datasets.status(datasetId);
+        setUploadedFiles((prev) => [newFile, ...prev]);
 
-      setAnalysisProgress((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(datasetId, {
-          datasetId,
-          progress: statusData.progress || 0,
-          status: statusData.status,
-          message: statusData.error || undefined,
+        toast({
+          title: "File Upload Started",
+          description: `Uploading ${file.name} to S3...`,
         });
-        return newMap;
-      });
 
-      // If analyzed, completed, or error, stop polling
-      if (statusData.status === "analyzed" || statusData.status === "completed" || statusData.status === "error" || statusData.status === "failed") {
-        stopPolling(datasetId);
+        try {
+          // Upload using API client
+          const uploadResult = await apiClient.datasets.upload(file);
+          console.log("Upload successful:", uploadResult);
 
-        // Show completion toast
-        if (statusData.status === "analyzed" || statusData.status === "completed") {
+          // Extract dataset ID - handle both 'id' and '_id' fields
+          const datasetId = uploadResult.id || (uploadResult as any)._id;
+
+          if (!datasetId) {
+            throw new Error("No dataset ID returned from server");
+          }
+
+          console.log("Dataset ID:", datasetId);
+
+          // Update file with actual dataset ID from backend
+          setUploadedFiles((prev) =>
+            prev.map((f) =>
+              f.id === newFile.id
+                ? { ...f, id: datasetId, status: "uploaded" }
+                : f
+            )
+          );
+
           toast({
-            title: "Analysis Complete",
-            description: `Detected ${statusData.anomaly_count || 0} anomalies`,
+            title: "Upload Complete",
+            description: `${file.name} uploaded successfully. Click "Autoencode" to continue.`,
           });
-        } else if (statusData.status === "error" || statusData.status === "failed") {
+
+        } catch (error) {
+          console.error("Error uploading file:", error);
+          setUploadedFiles((prev) =>
+            prev.map((f) =>
+              f.id === newFile.id ? { ...f, status: "failed" } : f
+            )
+          );
           toast({
-            title: "Analysis Failed",
-            description: statusData.error || "Failed to analyze dataset",
+            title: "Upload Failed",
+            description: error instanceof Error ? error.message : "Unknown error occurred",
             variant: "destructive",
           });
         }
-
-        // Refresh datasets
-        dataFetchedRef.current = false;
-        fetchDatasets();
-
-        // Remove from progress map
-        setAnalysisProgress((prev) => {
-          const newMap = new Map(prev);
-          newMap.delete(datasetId);
-          return newMap;
-        });
-      }
-    } catch (error) {
-      console.error("Error polling progress:", error);
-      // Stop polling on error
-      stopPolling(datasetId);
-    }
-  }, [apiClient, fetchDatasets, stopPolling]);
-
-  // Start polling for a dataset
-  const startPolling = useCallback((datasetId: string) => {
-    // Stop any existing polling for this dataset first
-    const existingInterval = pollingIntervalsRef.current.get(datasetId);
-    if (existingInterval) {
-      clearInterval(existingInterval);
-      pollingIntervalsRef.current.delete(datasetId);
-    }
-
-    // Initial poll
-    pollAnalysisProgress(datasetId);
-
-    // Set up interval
-    const interval = setInterval(() => {
-      pollAnalysisProgress(datasetId);
-    }, 3000); // Poll every 3 seconds (reduced from 2s to avoid spam)
-
-    pollingIntervalsRef.current.set(datasetId, interval);
-  }, [pollAnalysisProgress]);
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      pollingIntervalsRef.current.forEach((interval) => clearInterval(interval));
-      pollingIntervalsRef.current.clear();
-    };
-  }, []);
-
-  const handleUpload = async (file: File) => {
-    // Validate .xlsx and .csv only
-    const isXlsx = file.name.toLowerCase().endsWith(".xlsx");
-    const isCsv = file.name.toLowerCase().endsWith(".csv");
-
-    if (!isXlsx && !isCsv) {
-      toast({
-        title: "Invalid File Type",
-        description:
-          "Only .xlsx and .csv files are supported. PDFs, images, and other formats are not allowed.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setUploading(true);
-    setUploadProgress(0);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      // Simulate upload progress
-      const progressInterval = setInterval(() => {
-        setUploadProgress((prev) => Math.min(prev + 10, 90));
-      }, 200);
-
-      const uploadResponse = await axios.post("/anomaly/datasets/upload", formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      clearInterval(progressInterval);
-      setUploadProgress(100);
-
-      toast({
-        title: "Upload Successful",
-        description: `${file.name} has been uploaded successfully`,
-      });
-
-      // Extract dataset ID (try both 'id' and '_id' fields)
-      const datasetId = uploadResponse.data.id || uploadResponse.data._id;
-
-      console.log("Upload response:", uploadResponse.data);
-      console.log("Dataset ID:", datasetId);
-
-      if (!datasetId) {
-        console.error("No dataset ID in response:", uploadResponse.data);
+      } else {
         toast({
-          title: "Upload Warning",
-          description: "File uploaded but analysis cannot start (no dataset ID)",
+          title: "Invalid File Type",
+          description: "Please upload .xlsx or .csv files only",
           variant: "destructive",
         });
-        // Refresh the dataset list
-        dataFetchedRef.current = false;
-        fetchDatasets();
-        return;
       }
-
-      // Check if already polling (to prevent duplicate polling)
-      if (pollingIntervalsRef.current.has(datasetId)) {
-        console.log("Already polling dataset", datasetId);
-        return;
-      }
-
-      // Immediately trigger analysis
-      toast({
-        title: "Analysis Started",
-        description: "Running autoencoder anomaly detection...",
-      });
-
-      // Start polling for progress
-      startPolling(datasetId);
-
-      // Trigger analysis in the background
-      axios
-        .post(`/anomaly/datasets/${datasetId}/analyze`, {})
-        .then((response) => {
-          console.log("Analysis started:", response.data);
-          // If reused, show different message
-          if (response.data.reused) {
-            toast({
-              title: "Reusing Existing Session",
-              description: "Analysis is already in progress",
-            });
-          }
-        })
-        .catch((error) => {
-          console.error("Analysis error:", error);
-          toast({
-            title: "Analysis Failed",
-            description: error.response?.data?.detail || "Failed to analyze dataset",
-            variant: "destructive",
-          });
-          // Stop polling on error
-          stopPolling(datasetId);
-          // Refresh anyway to show failed status
-          dataFetchedRef.current = false;
-          fetchDatasets();
-        });
-
-      // Refresh the dataset list immediately to show "Processing" status
-      dataFetchedRef.current = false;
-      fetchDatasets();
-    } catch (error: any) {
-      console.error("Upload error:", error);
-      const errorMessage =
-        error.response?.data?.detail || "Failed to upload file. Please try again.";
-      toast({
-        title: "Upload Failed",
-        description: errorMessage,
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-      setTimeout(() => setUploadProgress(0), 1000);
     }
   };
-
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMins / 60);
-    const diffDays = Math.floor(diffHours / 24);
-
-    if (diffMins < 1) return "Just now";
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    return `${diffDays}d ago`;
-  };
-
-  const formatFileSize = (bytes?: number) => {
-    if (!bytes) return "Unknown size";
-    const kb = bytes / 1024;
-    const mb = kb / 1024;
-    if (mb >= 1) return `${mb.toFixed(2)} MB`;
-    return `${kb.toFixed(2)} KB`;
-  };
-
-  const getStatusBadge = (dataset: Dataset) => {
-    // If analyzed_at exists, it's completed
-    if (dataset.analyzed_at) {
-      return {
-        label: "Ready",
-        variant: "default" as const,
-        icon: CheckCircle,
-      };
-    }
-
-    // Check analysis_status if it exists
-    if (dataset.analysis_status === "processing") {
-      return {
-        label: "Processing",
-        variant: "secondary" as const,
-        icon: Loader2,
-      };
-    }
-
-    if (dataset.analysis_status === "failed") {
-      return {
-        label: "Failed",
-        variant: "destructive" as const,
-        icon: AlertCircle,
-      };
-    }
-
-    // Default to processing if just uploaded
-    return {
-      label: "Processing",
-      variant: "secondary" as const,
-      icon: Loader2,
-    };
-  };
-
-  // Filter and sort datasets
-  const filteredAndSortedDatasets = datasets
-    .filter((dataset) => {
-      if (filterStatus === "all") return true;
-      const status = getStatusBadge(dataset);
-      return status.label.toLowerCase() === filterStatus;
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case "date":
-          return new Date(b.uploaded_at).getTime() - new Date(a.uploaded_at).getTime();
-        case "name":
-          return a.filename.localeCompare(b.filename);
-        case "anomalies":
-          return (b.anomaly_count || 0) - (a.anomaly_count || 0);
-        default:
-          return 0;
-      }
-    });
 
   const handleActiveDetection = () => {
     toast({
       title: "Active Detection Started",
-      description: "Monitoring system logs for anomalies in real-time...",
+      description: "Monitoring system logs for anomalies...",
     });
   };
 
-  const handleDeleteAll = async () => {
-    setDeleting(true);
+  const handleAutoencode = async (fileId: string) => {
+    setUploadedFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, status: "autoencoding" } : f))
+    );
+    toast({
+      title: "Autoencoding Started",
+      description: "Running anomaly detection analysis...",
+    });
+
     try {
-      // Call API to delete all datasets
-      await axios.delete("/anomaly/datasets/delete-all");
+      // Start analysis using API client
+      const data = await apiClient.datasets.analyze(fileId);
+      console.log("Analysis started:", data);
 
-      toast({
-        title: "All Data Deleted",
-        description: "All datasets and S3 files have been permanently deleted",
-      });
+      // Start polling for progress
+      pollAnalysisProgress(fileId);
 
-      // Clear the datasets list
-      setDatasets([]);
-      dataFetchedRef.current = false;
-    } catch (error: any) {
-      console.error("Delete all error:", error);
+    } catch (error) {
+      console.error("Error starting analysis:", error);
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, status: "failed" } : f))
+      );
       toast({
-        title: "Delete Failed",
-        description: error.response?.data?.detail || "Failed to delete all datasets",
+        title: "Analysis Failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
         variant: "destructive",
       });
-    } finally {
-      setDeleting(false);
     }
   };
 
+  const pollAnalysisProgress = async (datasetId: string) => {
+    try {
+      const statusData = await apiClient.datasets.status(datasetId);
+      console.log("Dataset status:", statusData);
+
+      // Update file status based on API response
+      // Backend: "analyzing" → Frontend: "autoencoding"
+      // Backend: "analyzed" → Frontend: "autoencoded"
+      if (statusData.status === "analyzing") {
+        // Continue polling
+        setTimeout(() => pollAnalysisProgress(datasetId), 2000);
+      } else if (statusData.status === "analyzed") {
+        // Analysis complete - ready for LLM analysis
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === datasetId ? { ...f, status: "autoencoded" } : f))
+        );
+        toast({
+          title: "Autoencoding Complete",
+          description: `Found ${statusData.anomaly_count || 0} anomalies. Click 'Analyze' to generate LLM explanations.`,
+        });
+      } else if (statusData.status === "error") {
+        // Analysis failed
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === datasetId ? { ...f, status: "failed" } : f))
+        );
+        toast({
+          title: "Analysis Failed",
+          description: statusData.error || "Unknown error occurred",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Error checking analysis status:", error);
+      // Stop polling on error
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === datasetId ? { ...f, status: "failed" } : f))
+      );
+      toast({
+        title: "Status Check Failed",
+        description: "Could not check analysis progress",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleAnalyze = async (fileId: string) => {
+    setUploadedFiles((prev) =>
+      prev.map((f) => (f.id === fileId ? { ...f, status: "analyzing" } : f))
+    );
+    toast({
+      title: "Analysis Started",
+      description: "Generating detailed explanations...",
+    });
+
+    try {
+      // Start LLM analysis using API client
+      const data = await apiClient.datasets.startLLMAnalysis(fileId);
+      console.log("LLM analysis started:", data);
+
+      // Start polling for LLM analysis completion
+      pollLLMAnalysisProgress(fileId);
+
+    } catch (error) {
+      console.error("Error starting LLM analysis:", error);
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, status: "failed" } : f))
+      );
+      toast({
+        title: "LLM Analysis Failed",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const pollLLMAnalysisProgress = async (datasetId: string) => {
+    try {
+      const statusData = await apiClient.datasets.status(datasetId);
+      console.log("LLM Analysis status:", statusData);
+
+      // Backend: "triaging" → Frontend: "analyzing"
+      // Backend: "completed" → Frontend: "analyzed"
+      if (statusData.status === "triaging") {
+        // Continue polling
+        setTimeout(() => pollLLMAnalysisProgress(datasetId), 3000);
+      } else if (statusData.status === "completed") {
+        // Analysis complete - fetch the actual explanations
+        try {
+          const explanations = await apiClient.datasets.getLLMExplanations(datasetId);
+          console.log("LLM explanations received:", explanations);
+
+          // Store explanations in localStorage for ReportEditor
+          localStorage.setItem(`anomaly-data-${datasetId}`, JSON.stringify(explanations));
+        } catch (explError) {
+          console.error("Error fetching explanations:", explError);
+        }
+
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === datasetId ? { ...f, status: "analyzed" } : f))
+        );
+        toast({
+          title: "Analysis Complete",
+          description: "Report is ready. Click 'View Report' to see details.",
+        });
+      } else if (statusData.status === "error") {
+        // Analysis failed
+        setUploadedFiles((prev) =>
+          prev.map((f) => (f.id === datasetId ? { ...f, status: "failed" } : f))
+        );
+        toast({
+          title: "LLM Analysis Failed",
+          description: statusData.error || "Unknown error occurred",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Error checking LLM analysis status:", error);
+      setUploadedFiles((prev) =>
+        prev.map((f) => (f.id === datasetId ? { ...f, status: "failed" } : f))
+      );
+      toast({
+        title: "Status Check Failed",
+        description: "Could not check LLM analysis progress",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const formatTime = (date: Date) => {
+    const now = new Date();
+    const diff = Math.floor((now.getTime() - date.getTime()) / 1000 / 60);
+
+    if (diff < 1) return "Just now";
+    if (diff < 60) return `${diff}m ago`;
+    const hours = Math.floor(diff / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
   return (
-    <div className="p-8 space-y-8">
-      {/* Welcome Section */}
-      <div className="space-y-2">
-        <h1 className="text-4xl font-bold text-foreground">
-          Welcome back, {user?.username || "User"}! 👋
+    <div className="container max-w-7xl mx-auto p-6 md:p-8">
+      <div className="mb-8">
+        <h1 className="text-4xl md:text-5xl font-bold mb-2">
+          Anomaly Detection Dashboard
         </h1>
-        <p className="text-xl text-muted-foreground">
-          Upload your dataset to begin anomaly detection analysis
+        <p className="text-lg text-muted-foreground">
+          Upload files or run active detection to identify anomalies
         </p>
       </div>
 
-      {/* Two Column Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Left Column - Upload & Active Detection */}
+      <div className="grid lg:grid-cols-2 gap-8">
+        {/* LEFT COLUMN - Detection Options */}
         <div className="space-y-8">
-          {/* Upload Section */}
-          <Card className="p-8">
-        <div
-          className={`border-2 border-dashed rounded-xl p-12 transition-all duration-200 ${
-            dragActive
-              ? "border-primary bg-primary/5"
-              : "border-border hover:border-primary/50"
-          }`}
-          onDragEnter={handleDrag}
-          onDragLeave={handleDrag}
-          onDragOver={handleDrag}
-          onDrop={handleDrop}
-        >
-          <div className="flex flex-col items-center justify-center space-y-6">
-            <div className="p-6 rounded-full bg-primary/10">
-              {uploading ? (
-                <Loader2 className="w-16 h-16 text-primary animate-spin" />
-              ) : (
-                <Upload className="w-16 h-16 text-primary" />
-              )}
-            </div>
+          {/* Static Detection */}
+          <div>
+            <h2 className="text-3xl font-semibold mb-6">Static Detection</h2>
 
-            <div className="text-center space-y-2">
-              <h3 className="text-2xl font-semibold text-foreground">
-                {uploading ? "Uploading..." : "Upload Dataset"}
-              </h3>
-              <p className="text-muted-foreground">
-                Drag and drop your file here, or click to browse
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Supported formats: .xlsx, .csv
-              </p>
-            </div>
-
-            {/* Upload Progress Bar */}
-            {uploading && uploadProgress > 0 && (
-              <div className="w-full max-w-md space-y-2">
-                <Progress value={uploadProgress} className="h-3" />
-                <p className="text-sm text-center text-muted-foreground">
-                  Uploading... {uploadProgress}%
-                </p>
-              </div>
-            )}
-
-            <input
-              id="file-upload"
-              type="file"
-              className="hidden"
-              accept=".xlsx,.csv"
-              onChange={handleFileInput}
-              disabled={uploading}
-            />
-            <Button
-              size="lg"
-              disabled={uploading}
-              onClick={() => document.getElementById("file-upload")?.click()}
-              type="button"
-              className="button-hover-grow"
+            {/* Drag & Drop Zone */}
+            <div
+              onDragEnter={handleDrag}
+              onDragLeave={handleDrag}
+              onDragOver={handleDrag}
+              onDrop={handleDrop}
+              className={`
+                border-2 border-dashed rounded-lg p-8 mb-4 transition-all duration-200
+                ${
+                  dragActive
+                    ? "border-primary bg-primary/5"
+                    : "border-border hover:border-primary/50"
+                }
+                cursor-pointer
+              `}
             >
-              <FileSpreadsheet className="mr-2 h-5 w-5" />
-              {uploading ? "Uploading..." : "Select File"}
+              <div className="flex flex-col items-center justify-center text-center space-y-4">
+                <Upload className="w-16 h-16 text-primary" />
+                <div>
+                  <p className="text-xl font-medium mb-1">
+                    Drag & drop files here
+                  </p>
+                  <p className="text-base text-muted-foreground">
+                    Supports .xlsx and .csv files
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* File Browser Button */}
+            <label htmlFor="file-input">
+              <Button variant="outline" size="lg" className="w-full" asChild>
+                <span>
+                  <FolderOpen size={24} />
+                  Browse Files
+                </span>
+              </Button>
+            </label>
+            <input
+              id="file-input"
+              type="file"
+              accept=".xlsx,.csv"
+              multiple
+              onChange={handleFileInput}
+              className="hidden"
+            />
+          </div>
+
+          {/* Active Detection */}
+          <div>
+            <h2 className="text-3xl font-semibold mb-4">Active Detection</h2>
+            <p className="text-lg text-muted-foreground mb-6">
+              Automatically detect and analyze system logs
+            </p>
+            <Button size="lg" className="w-full" onClick={handleActiveDetection}>
+              <Zap size={24} />
+              Run Active Anomaly Detection
             </Button>
           </div>
         </div>
-      </Card>
 
-          {/* Active Detection Section */}
-          <Card className="p-8">
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <h3 className="text-2xl font-semibold text-foreground">
-                  Active Detection
-                </h3>
-                <p className="text-muted-foreground">
-                  Monitor system logs in real-time for anomalies and suspicious activity
-                </p>
-              </div>
+        {/* RIGHT COLUMN - Uploaded Files & Reports */}
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-3xl font-semibold">Recent Uploads</h2>
+          </div>
 
-              <div className="flex flex-col items-center justify-center space-y-4 p-8 border-2 border-dashed border-border rounded-xl">
-                <div className="p-6 rounded-full bg-primary/10">
-                  <AlertCircle className="w-12 h-12 text-primary" />
+          <div className="space-y-4">
+            {uploadedFiles.length === 0 ? (
+              <Card className="p-12">
+                <div className="flex flex-col items-center justify-center space-y-4">
+                  <FileSpreadsheet className="w-16 h-16 text-muted-foreground/50" />
+                  <div className="text-center">
+                    <p className="text-lg font-medium text-foreground">No datasets yet</p>
+                    <p className="text-muted-foreground">
+                      Upload your first dataset to get started
+                    </p>
+                  </div>
                 </div>
-                <p className="text-center text-muted-foreground">
-                  Real-time anomaly detection for live system monitoring
-                </p>
-                <Button size="lg" variant="default" onClick={handleActiveDetection} className="button-hover-grow">
-                  <CheckCircle className="mr-2 h-5 w-5" />
-                  Detect Now
-                </Button>
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        {/* Right Column - Uploaded Files Section */}
-        <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-foreground">Your Datasets</h2>
-          <div className="flex items-center space-x-3">
-            <Badge variant="secondary" className="text-base px-4 py-2">
-              {filteredAndSortedDatasets.length} of {datasets.length} {datasets.length === 1 ? "file" : "files"}
-            </Badge>
-
-            {datasets.length > 0 && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    disabled={deleting}
-                  >
-                    {deleting ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Deleting...
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete All
-                      </>
-                    )}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This action cannot be undone. This will permanently delete all{" "}
-                      <span className="font-semibold">{datasets.length}</span> dataset
-                      {datasets.length === 1 ? "" : "s"} from the database and remove all
-                      associated files from S3 storage.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={handleDeleteAll}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      Delete All Datasets
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-          </div>
-        </div>
-
-        {/* Filters and Sorting */}
-        {datasets.length > 0 && (
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Select value={filterStatus} onValueChange={setFilterStatus}>
-              <SelectTrigger className="w-full sm:w-[200px]">
-                <Filter className="w-4 h-4 mr-2" />
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Datasets</SelectItem>
-                <SelectItem value="ready">Ready</SelectItem>
-                <SelectItem value="processing">Processing</SelectItem>
-                <SelectItem value="failed">Failed</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="w-full sm:w-[200px]">
-                <ArrowUpDown className="w-4 h-4 mr-2" />
-                <SelectValue placeholder="Sort by" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="date">Sort by Date</SelectItem>
-                <SelectItem value="name">Sort by Name</SelectItem>
-                <SelectItem value="anomalies">Sort by Anomalies</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-
-        {loading ? (
-          <Card className="p-12">
-            <div className="flex flex-col items-center justify-center space-y-4">
-              <Loader2 className="w-12 h-12 text-primary animate-spin" />
-              <p className="text-muted-foreground">Loading datasets...</p>
-            </div>
-          </Card>
-        ) : datasets.length === 0 ? (
-          <Card className="p-12">
-            <div className="flex flex-col items-center justify-center space-y-4">
-              <FileSpreadsheet className="w-16 h-16 text-muted-foreground/50" />
-              <div className="text-center">
-                <p className="text-lg font-medium text-foreground">No datasets yet</p>
-                <p className="text-muted-foreground">
-                  Upload your first dataset to get started
-                </p>
-              </div>
-            </div>
-          </Card>
-        ) : filteredAndSortedDatasets.length === 0 && datasets.length > 0 ? (
-          <Card className="p-12">
-            <div className="flex flex-col items-center justify-center space-y-4">
-              <Filter className="w-16 h-16 text-muted-foreground/50" />
-              <div className="text-center">
-                <p className="text-lg font-medium text-foreground">No datasets match your filters</p>
-                <p className="text-muted-foreground">
-                  Try adjusting your filter or sort criteria
-                </p>
-              </div>
-              <Button variant="outline" onClick={() => { setFilterStatus("all"); setSortBy("date"); }}>
-                Clear Filters
-              </Button>
-            </div>
-          </Card>
-        ) : (
-          <div className="grid gap-4">
-            {filteredAndSortedDatasets.map((dataset) => {
-              const progress = analysisProgress.get(dataset.id);
-              const isAnalyzing = progress && (progress.status === "processing" || progress.status === "pending");
-
-              return (
+              </Card>
+            ) : (
+              uploadedFiles.map((file) => (
                 <Card
-                  key={dataset.id}
-                  className="p-6 interactive-card card-hover-bg"
-                  onClick={() => navigate(`/datasets/${dataset.id}`)}
+                  key={file.id}
+                  className="p-6 hover-lift border-2 hover:border-primary"
                 >
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-4 flex-1">
-                        <div className="p-3 rounded-lg bg-primary/10">
-                          <FileSpreadsheet className="w-8 h-8 text-primary" />
+                  <div className="flex items-start gap-4">
+                    <FileSpreadsheet className="w-8 h-8 text-primary shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-xl font-semibold mb-1 truncate">
+                        {file.name}
+                      </h3>
+                      <p className="text-base text-muted-foreground mb-3">
+                        {formatTime(file.uploadTime)}
+                      </p>
+                      
+                      {/* Status Badges */}
+                      {file.status === "uploading" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-warning/20 text-warning"
+                          >
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Uploading to S3
+                          </Badge>
                         </div>
-                        <div className="flex-1">
-                          <h3 className="text-lg font-semibold text-foreground">
-                            {dataset.filename}
-                          </h3>
-                          <div className="flex items-center space-x-4 mt-1">
-                            <span className="text-sm text-muted-foreground">
-                              Uploaded {formatTime(dataset.uploaded_at)}
-                            </span>
-                            {dataset.file_size && (
-                              <span className="text-sm text-muted-foreground">
-                                {formatFileSize(dataset.file_size)}
-                              </span>
-                            )}
-                            {dataset.anomaly_count !== undefined && dataset.analyzed_at && (
-                              <span className="text-sm font-semibold text-orange-600">
-                                {dataset.anomaly_count} anomalies detected
-                              </span>
-                            )}
-                          </div>
+                      )}
+                      
+                      {file.status === "uploaded" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-success/20 text-success"
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            Uploaded to S3
+                          </Badge>
                         </div>
-                      </div>
-                      <div className="flex items-center space-x-3">
-                        {(() => {
-                          const status = getStatusBadge(dataset);
-                          const StatusIcon = status.icon;
-                          return (
-                            <Badge variant={status.variant} className="flex items-center space-x-1">
-                              <StatusIcon className={`w-4 h-4 ${status.label === "Processing" ? "animate-spin" : ""}`} />
-                              <span>{status.label}</span>
-                            </Badge>
-                          );
-                        })()}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={!dataset.analyzed_at}
-                          className="hover-scale"
-                        >
-                          <Eye className="mr-2 h-4 w-4" />
-                          View
-                        </Button>
-                      </div>
-                    </div>
+                      )}
 
-                    {/* Analysis Progress Bar */}
-                    {isAnalyzing && (
-                      <div className="space-y-2 pt-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-muted-foreground">
-                            {progress.message || "Analyzing dataset..."}
-                          </span>
-                          <span className="font-medium">{progress.progress}%</span>
+                      {file.status === "autoencoding" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-warning/20 text-warning"
+                          >
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Autoencoding...
+                          </Badge>
                         </div>
-                        <Progress value={progress.progress} className="h-2" />
-                      </div>
-                    )}
+                      )}
+
+                      {file.status === "autoencoded" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-success/20 text-success"
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            Autoencoded
+                          </Badge>
+                        </div>
+                      )}
+
+                      {file.status === "analyzing" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-warning/20 text-warning"
+                          >
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Analyzing with LLM...
+                          </Badge>
+                        </div>
+                      )}
+
+                      {file.status === "analyzed" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-success/20 text-success"
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            Analysis Complete
+                          </Badge>
+                        </div>
+                      )}
+                      
+                      {file.status === "failed" && (
+                        <div className="mb-4">
+                          <Badge
+                            variant="secondary"
+                            className="bg-danger/20 text-danger"
+                          >
+                            <AlertCircle className="w-4 h-4 mr-2" />
+                            Failed
+                          </Badge>
+                        </div>
+                      )}
+                      
+                      {/* Action Buttons */}
+                      {file.status === "uploaded" && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleAutoencode(file.id)}
+                        >
+                          <Zap className="w-4 h-4 mr-2" />
+                          Autoencode
+                        </Button>
+                      )}
+
+                      {file.status === "autoencoded" && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleAnalyze(file.id)}
+                        >
+                          <Loader2 className="w-4 h-4 mr-2" />
+                          Analyze
+                        </Button>
+                      )}
+
+                      {file.status === "analyzed" && (
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => navigate(`/reports/${file.id}`)}
+                          >
+                            <Eye className="w-4 h-4 mr-2" />
+                            View Report
+                          </Button>
+                          <Button size="sm" variant="outline">
+                            <Download className="w-4 h-4 mr-2" />
+                            Export
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </Card>
-              );
-            })}
+              ))
+            )}
           </div>
-        )}
+
+          <Button
+            variant="outline"
+            size="lg"
+            className="w-full"
+            onClick={() => navigate("/reports/dashboard")}
+          >
+            View All Reports
+          </Button>
         </div>
       </div>
     </div>
