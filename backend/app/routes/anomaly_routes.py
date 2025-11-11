@@ -274,15 +274,17 @@ async def start_analysis(
 
 
 async def run_autoencoder_background(dataset_id: str, user_id: str):
-    """Background task to run autoencoder analysis using AutoencoderService"""
+    """Background task to run autoencoder analysis using AutoEncodeFinal.py"""
     try:
         from app.database.connection import datasets_collection
         import sys
         from pathlib import Path
+        import tempfile
+        import os
 
         logger.info(f"Starting background analysis for dataset {dataset_id}")
 
-        # Add service directory to path to import AutoencoderService
+        # Add service directory to path to import AutoEncodeFinal
         # In Docker: /app/backend/service, Local: ../service relative to this file
         service_dir_docker = Path("/app/backend/service")
         service_dir_local = Path(__file__).resolve().parent.parent.parent / "service"
@@ -297,10 +299,10 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
         logger.info(f"Added service directory to path: {service_dir}")
 
         try:
-            from autoencoder_service import AutoencoderService
-            logger.info("Successfully imported AutoencoderService")
+            from AutoEncodeFinal import run_anomaly_detection
+            logger.info("Successfully imported AutoEncodeFinal")
         except Exception as import_error:
-            logger.error(f"Failed to import AutoencoderService: {str(import_error)}", exc_info=True)
+            logger.error(f"Failed to import AutoEncodeFinal: {str(import_error)}", exc_info=True)
             raise
 
         # Get dataset info
@@ -315,130 +317,110 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
             updates={"status": "analyzing", "progress": 10}
         )
 
-        # Download file from S3
+        # Download file from S3 and save locally
         logger.info(f"Downloading dataset {dataset_id} from S3: {dataset_doc['s3_key']}")
         file_content = s3_manager.get_object_stream(dataset_doc['s3_key']).read()
 
-        # Parse file
+        # Save to temp directory
+        temp_dir = tempfile.gettempdir()
+        dataset_filename = f"dataset_{dataset_id}.csv"
+        dataset_path = os.path.join(temp_dir, dataset_filename)
+
+        # Write file to disk
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 20}
+        )
+
+        is_csv = dataset_doc['filename'].lower().endswith('.csv')
+        if is_csv:
+            with open(dataset_path, 'wb') as f:
+                f.write(file_content)
+        else:
+            # Convert Excel to CSV
+            from io import BytesIO
+            df = pd.read_excel(BytesIO(file_content), sheet_name=0)
+            df.to_csv(dataset_path, index=False)
+
+        logger.info(f"Saved dataset to: {dataset_path}")
+
+        # Update progress: running analysis
         await anomaly_repo.update_dataset(
             dataset_id=dataset_id,
             updates={"progress": 30}
         )
 
-        is_csv = dataset_doc['filename'].lower().endswith('.csv')
-        if is_csv:
-            from io import StringIO
-            try:
-                text_content = file_content.decode('utf-8')
-            except UnicodeDecodeError:
-                text_content = file_content.decode('latin-1')
-            df = pd.read_csv(StringIO(text_content))
+        # Determine model directory path
+        # In Docker: /app/Model/AutoEncoder, Local: ../../Model/AutoEncoder from service
+        model_dir_docker = Path("/app/Model/AutoEncoder")
+        model_dir_local = service_dir.parent.parent / "Model" / "AutoEncoder"
+
+        if model_dir_docker.exists():
+            model_dir = model_dir_docker
         else:
-            from io import BytesIO
-            df = pd.read_excel(BytesIO(file_content), sheet_name=0)
+            model_dir = model_dir_local
 
-        logger.info(f"Parsed file: {len(df)} rows, {len(df.columns)} columns")
+        logger.info(f"Using model directory: {model_dir}")
 
-        # Initialize AutoencoderService with pre-trained model
-        await anomaly_repo.update_dataset(
-            dataset_id=dataset_id,
-            updates={"progress": 40}
+        # Create output directory for results
+        output_dir = os.path.join(temp_dir, f"results_{dataset_id}")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Run AutoEncodeFinal analysis
+        logger.info("Running AutoEncodeFinal anomaly detection...")
+        results = run_anomaly_detection(
+            dataset_path=dataset_path,
+            model_dir=str(model_dir),
+            output_dir=output_dir
         )
 
-        logger.info("Initializing AutoencoderService with pre-trained model...")
-        # Path is mounted in Docker container at /app/Model
-        model_dir = Path("/app/Model/AutoEncoder")
-        service = AutoencoderService(
-            model_path=str(model_dir / "autoencoder_final.h5"),
-            preprocessor_path=str(model_dir / "preprocessor.pkl"),
-            threshold_path=str(model_dir / "threshold.npy")
-        )
+        logger.info(f"Analysis complete: {results['anomaly_count']} anomalies found")
 
-        # Run analysis
-        await anomaly_repo.update_dataset(
-            dataset_id=dataset_id,
-            updates={"progress": 50}
-        )
-
-        logger.info("Running anomaly detection...")
-        results_df = service.analyze_dataset(df)
-
-        # Filter only anomalies (anomaly_prediction == 1)
-        anomalies_df = results_df[results_df['anomaly_prediction'] == 1]
-        logger.info(f"Detected {len(anomalies_df)} anomalies out of {len(results_df)} sequences")
-
-        # Store anomalies in database
+        # Update progress: storing results
         await anomaly_repo.update_dataset(
             dataset_id=dataset_id,
             updates={"progress": 70}
         )
 
+        # Read top 2 critical anomalies and store in database
         stored_count = 0
-        for _, row in anomalies_df.iterrows():
-            try:
-                # Extract relevant columns for storage
-                raw_data = {k: v for k, v in row.to_dict().items()
-                           if k not in ['sequence_id', 'original_row_index', 'anomaly_prediction',
-                                       'reconstruction_error', 'anomaly_score']}
+        top_2_path = results.get('top_2_path')
 
-                await anomaly_repo.create_anomaly(
-                    dataset_id=dataset_id,
-                    user_id=user_id,
-                    anomaly_score=float(row['anomaly_score']),
-                    row_index=int(row.get('original_row_index', row.get('sequence_id', 0))),
-                    sheet_name="Sheet1",
-                    raw_data=raw_data,
-                    anomalous_features=[
-                        {
-                            "feature_name": "reconstruction_error",
-                            "actual_value": float(row['reconstruction_error']),
-                            "reconstruction_error": float(row['reconstruction_error'])
-                        }
-                    ]
-                )
-                stored_count += 1
-            except Exception as e:
-                logger.error(f"Error storing anomaly: {str(e)}")
+        if top_2_path and os.path.exists(top_2_path):
+            logger.info(f"Reading top 2 critical anomalies from: {top_2_path}")
+            top_2_df = pd.read_csv(top_2_path)
 
-        # Export anomalies to CSV
+            for _, row in top_2_df.iterrows():
+                try:
+                    # Extract relevant columns for storage
+                    raw_data = {k: v for k, v in row.to_dict().items()
+                               if k not in ['sequence_index', 'reconstruction_error', 'priority']}
+
+                    await anomaly_repo.create_anomaly(
+                        dataset_id=dataset_id,
+                        user_id=user_id,
+                        anomaly_score=float(row['reconstruction_error']),
+                        row_index=int(row.get('sequence_index', 0)),
+                        sheet_name="Sheet1",
+                        raw_data=raw_data,
+                        anomalous_features=[
+                            {
+                                "feature_name": "reconstruction_error",
+                                "actual_value": float(row['reconstruction_error']),
+                                "reconstruction_error": float(row['reconstruction_error']),
+                                "priority": str(row.get('priority', 'UNKNOWN'))
+                            }
+                        ]
+                    )
+                    stored_count += 1
+                except Exception as e:
+                    logger.error(f"Error storing anomaly: {str(e)}")
+
+        # Update progress: finalizing
         await anomaly_repo.update_dataset(
             dataset_id=dataset_id,
-            updates={"progress": 85}
+            updates={"progress": 90}
         )
-
-        csv_local_path = None
-        csv_s3_key = None
-
-        if len(anomalies_df) > 0:
-            try:
-                # Save locally
-                import tempfile
-                import os
-                temp_dir = tempfile.gettempdir()
-                csv_filename = f"anomalies_{dataset_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-                csv_local_path = os.path.join(temp_dir, csv_filename)
-                anomalies_df.to_csv(csv_local_path, index=False)
-                logger.info(f"Saved anomalies CSV locally: {csv_local_path}")
-
-                # Upload to S3
-                csv_s3_key = f"anomalies/{user_id}/{csv_filename}"
-                with open(csv_local_path, 'rb') as f:
-                    csv_content = f.read()
-
-                upload_success = await upload_to_s3(
-                    file_content=csv_content,
-                    s3_key=csv_s3_key,
-                    content_type="text/csv"
-                )
-
-                if upload_success:
-                    logger.info(f"Uploaded anomalies CSV to S3: {csv_s3_key}")
-                else:
-                    logger.warning("Failed to upload anomalies CSV to S3")
-                    csv_s3_key = None
-
-            except Exception as e:
-                logger.error(f"Error exporting anomalies to CSV: {str(e)}", exc_info=True)
 
         # Mark as analyzed (ready for LLM)
         await anomaly_repo.update_dataset(
@@ -446,14 +428,25 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
             updates={
                 "status": "analyzed",
                 "progress": 100,
-                "anomaly_count": stored_count,
+                "anomaly_count": results['anomaly_count'],
                 "analyzed_at": datetime.utcnow(),
-                "anomalies_csv_local": csv_local_path,
-                "anomalies_csv_s3": csv_s3_key
+                "top_2_critical_path": top_2_path,
+                "full_results_path": results.get('full_results_path'),
+                "precision": results.get('precision'),
+                "recall": results.get('recall'),
+                "f1_score": results.get('f1_score')
             }
         )
 
-        logger.info(f"Analysis complete for dataset {dataset_id}: {stored_count} anomalies (CSV: {csv_local_path})")
+        logger.info(f"Analysis complete for dataset {dataset_id}: {stored_count} top anomalies stored (Total: {results['anomaly_count']})")
+
+        # Cleanup temp dataset file
+        try:
+            if os.path.exists(dataset_path):
+                os.remove(dataset_path)
+                logger.info(f"Cleaned up temp file: {dataset_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp file: {str(e)}")
 
     except Exception as e:
         logger.error(f"Error in background autoencoder task: {str(e)}", exc_info=True)
