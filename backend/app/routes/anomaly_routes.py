@@ -1161,3 +1161,94 @@ async def get_llm_explanation(
     except Exception as e:
         logger.error(f"Error retrieving LLM explanation {explanation_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve LLM explanation")
+
+
+@router.get("/datasets/{dataset_id}/export-pdf")
+async def export_dataset_pdf(
+    dataset_id: str,
+    current_user: User = Depends(get_current_user),
+    include_recommendations: bool = Query(default=True, description="Include triage recommendations"),
+    include_mitre: bool = Query(default=True, description="Include MITRE ATT&CK mappings")
+):
+    """
+    Export dataset analysis as a professional PDF report.
+
+    This endpoint generates a comprehensive PDF report including:
+    - Executive summary with severity breakdown
+    - Detailed findings for each anomaly
+    - MITRE ATT&CK technique mappings (optional)
+    - Triage recommendations (optional)
+
+    The PDF is generated using WeasyPrint and includes professional styling.
+
+    Returns:
+        StreamingResponse: PDF file download
+    """
+    try:
+        # Get dataset and verify ownership
+        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+
+        # Check if dataset has been analyzed
+        if dataset.status not in [DatasetStatus.COMPLETED, DatasetStatus.TRIAGING]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset must have completed LLM analysis. Current status: {dataset.status}"
+            )
+
+        # Fetch LLM explanations using anomaly_repo
+        explanations_cursor = anomaly_repo.llm_explanations_collection.find({"dataset_id": dataset_id})
+        explanations_list = list(explanations_cursor)
+
+        if not explanations_list:
+            raise HTTPException(
+                status_code=404,
+                detail="No LLM explanations found for this dataset"
+            )
+
+        logger.info(f"Generating PDF report for dataset {dataset_id} with {len(explanations_list)} explanations")
+
+        # Prepare dataset info
+        dataset_dict = dataset.model_dump()
+
+        # Import and use PDF generator
+        from service.ExportPdf import generate_pdf_report
+
+        pdf_bytes = generate_pdf_report(
+            dataset_id=dataset_id,
+            dataset_info=dataset_dict,
+            explanations=explanations_list,
+            include_recommendations=include_recommendations,
+            include_mitre=include_mitre
+        )
+
+        # Generate filename
+        from datetime import timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"anomaly_report_{dataset.filename}_{timestamp}.pdf"
+
+        # Clean filename (remove special characters)
+        import re
+        filename = re.sub(r'[^\w\s.-]', '_', filename)
+
+        logger.info(f"Successfully generated PDF report: {filename} ({len(pdf_bytes)} bytes)")
+
+        # Return PDF as downloadable file
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(pdf_bytes))
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting PDF for dataset {dataset_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF report: {str(e)}"
+        )

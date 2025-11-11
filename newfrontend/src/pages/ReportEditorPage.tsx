@@ -17,6 +17,7 @@ import {
   Loader2,
   Brain,
   RefreshCw,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import axios from "@/lib/axios";
@@ -212,11 +213,61 @@ const ReportEditorPage = () => {
     }
   };
 
-  const handleExportPDF = () => {
-    toast({
-      title: "Exporting PDF",
-      description: "Your report is being exported as PDF...",
-    });
+  const handleExportPDF = async () => {
+    if (!id) return;
+
+    try {
+      toast({
+        title: "Generating PDF",
+        description: "Creating your report PDF. This may take a moment...",
+      });
+
+      // Call the PDF export endpoint
+      const response = await axios.get(
+        `/anomaly/datasets/${id}/export-pdf?include_recommendations=true&include_mitre=true`,
+        {
+          responseType: 'blob', // Important for binary data
+        }
+      );
+
+      // Create a download link
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+
+      // Extract filename from Content-Disposition header or use default
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = `anomaly_report_${id}.pdf`;
+
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      toast({
+        title: "PDF Downloaded",
+        description: "Your report has been downloaded successfully.",
+      });
+
+    } catch (err: any) {
+      console.error("Error exporting PDF:", err);
+      toast({
+        title: "Export Failed",
+        description: err.response?.data?.detail || "Failed to generate PDF report",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleExportExcel = () => {
@@ -372,6 +423,19 @@ const ReportEditorPage = () => {
 
   return (
     <div className="container max-w-7xl mx-auto p-6 md:p-8">
+      {/* Back Button */}
+      <div className="mb-6">
+        <Button
+          variant="outline"
+          size="lg"
+          onClick={() => navigate("/reports/dashboard")}
+          className="gap-2"
+        >
+          <ArrowLeft className="w-5 h-5" />
+          Back to Report Dashboard
+        </Button>
+      </div>
+
       {/* Header */}
       <div className="mb-8">
         <Input

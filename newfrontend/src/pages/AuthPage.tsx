@@ -101,10 +101,13 @@ const AuthPage = () => {
         <div className="bg-card rounded-2xl shadow-2xl p-8 border border-border">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-foreground mb-2">
-              Anomaly Detection Platform
+              STARAI
             </h1>
             <p className="text-lg text-muted-foreground">
-              Secure Access Portal
+              An Anomaly Detection Platform
+            </p>
+            <p className="text-lg text-muted-foreground">
+              By the Mak's Men
             </p>
           </div>
 

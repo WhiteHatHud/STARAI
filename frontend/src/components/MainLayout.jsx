@@ -175,7 +175,7 @@ const MainLayout = ({ children, onLogout }) => {
           <aside className="fixed left-0 top-0 bottom-0 w-[280px] bg-sidebar border-r border-sidebar-border z-50 md:hidden flex flex-col">
             <div className="p-4 border-b border-sidebar-border flex items-center justify-between">
               <h2 className="text-lg font-bold text-sidebar-foreground">
-                Detection Platform
+                STARAI
               </h2>
               <Button
                 variant="ghost"

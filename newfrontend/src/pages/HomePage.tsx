@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import {
   Loader2,
   Eye,
   Download,
+  Trash2,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
@@ -31,6 +32,7 @@ const HomePage = () => {
   const { user, token } = useStore();
   const [dragActive, setDragActive] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [loadingDatasets, setLoadingDatasets] = useState(true);
 
   // Create API client with token
   const apiClient = useMemo(() => {
@@ -39,6 +41,66 @@ const HomePage = () => {
       getToken: () => token,
     });
   }, [token]);
+
+  // Fetch existing datasets on mount
+  useEffect(() => {
+    const fetchDatasets = async () => {
+      if (!token) {
+        setLoadingDatasets(false);
+        return;
+      }
+
+      try {
+        const datasets = await apiClient.datasets.list();
+        console.log("Fetched datasets:", datasets);
+
+        // Map backend datasets to UploadedFile format
+        const mappedFiles: UploadedFile[] = datasets.map((dataset: any) => {
+          // Map backend status to frontend status
+          let frontendStatus: UploadedFile["status"] = "uploaded";
+
+          switch (dataset.status) {
+            case "uploaded":
+              frontendStatus = "uploaded";
+              break;
+            case "analyzing":
+              frontendStatus = "autoencoding";
+              break;
+            case "analyzed":
+              frontendStatus = "autoencoded";
+              break;
+            case "triaging":
+              frontendStatus = "analyzing";
+              break;
+            case "completed":
+              frontendStatus = "analyzed";
+              break;
+            case "error":
+              frontendStatus = "failed";
+              break;
+            default:
+              frontendStatus = "uploaded";
+          }
+
+          return {
+            id: dataset.id,
+            name: dataset.filename || dataset.original_filename || "Unknown",
+            uploadTime: new Date(dataset.uploaded_at),
+            status: frontendStatus,
+          };
+        });
+
+        setUploadedFiles(mappedFiles);
+      } catch (error) {
+        console.error("Error fetching datasets:", error);
+        // Don't show error toast on initial load
+      } finally {
+        setLoadingDatasets(false);
+      }
+    };
+
+    fetchDatasets();
+  }, [apiClient, token]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -310,6 +372,46 @@ const HomePage = () => {
     return `${Math.floor(hours / 24)}d ago`;
   };
 
+  const handleDeleteAll = async () => {
+    if (uploadedFiles.length === 0) {
+      toast({
+        title: "No Datasets",
+        description: "There are no datasets to delete",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Confirm deletion
+    if (!window.confirm(`Are you sure you want to delete all ${uploadedFiles.length} datasets? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      toast({
+        title: "Deleting All Datasets",
+        description: "Please wait while we delete all datasets...",
+      });
+
+      await apiClient.datasets.deleteAll();
+
+      // Clear the uploaded files list
+      setUploadedFiles([]);
+
+      toast({
+        title: "All Datasets Deleted",
+        description: "Successfully deleted all datasets and associated data",
+      });
+    } catch (error) {
+      console.error("Error deleting all datasets:", error);
+      toast({
+        title: "Delete Failed",
+        description: error instanceof Error ? error.message : "Failed to delete all datasets",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="container max-w-7xl mx-auto p-6 md:p-8">
       <div className="mb-8">
@@ -393,10 +495,28 @@ const HomePage = () => {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="text-3xl font-semibold">Recent Uploads</h2>
+            {uploadedFiles.length > 0 && (
+              <Button
+                variant="destructive"
+                size="lg"
+                onClick={handleDeleteAll}
+                className="gap-2"
+              >
+                <Trash2 className="w-5 h-5" />
+                Delete All Datasets
+              </Button>
+            )}
           </div>
 
           <div className="space-y-4">
-            {uploadedFiles.length === 0 ? (
+            {loadingDatasets ? (
+              <Card className="p-12">
+                <div className="flex flex-col items-center justify-center space-y-4">
+                  <Loader2 className="w-12 h-12 text-primary animate-spin" />
+                  <p className="text-lg text-muted-foreground">Loading datasets...</p>
+                </div>
+              </Card>
+            ) : uploadedFiles.length === 0 ? (
               <Card className="p-12">
                 <div className="flex flex-col items-center justify-center space-y-4">
                   <FileSpreadsheet className="w-16 h-16 text-muted-foreground/50" />
