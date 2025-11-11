@@ -390,25 +390,50 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
             logger.info(f"Reading top 2 critical anomalies from: {top_2_path}")
             top_2_df = pd.read_csv(top_2_path)
 
+            # Get normalization values from results
+            max_error = results.get('max_reconstruction_error', top_2_df['reconstruction_error'].max())
+            mean_error = results.get('mean_reconstruction_error', top_2_df['reconstruction_error'].mean())
+            threshold = 2.62  # From AutoEncodeFinal.py
+
             for _, row in top_2_df.iterrows():
                 try:
-                    # Extract relevant columns for storage
+                    reconstruction_error = float(row['reconstruction_error'])
+
+                    # Normalize reconstruction error to 0-1 range for database schema
+                    # Use max_error as upper bound
+                    normalized_score = min(reconstruction_error / max_error, 1.0) if max_error > 0 else 0.0
+
+                    # Extract relevant columns for storage (keep raw error for forensics)
                     raw_data = {k: v for k, v in row.to_dict().items()
-                               if k not in ['sequence_index', 'reconstruction_error', 'priority']}
+                               if k not in ['sequence_index', 'priority']}
+                    # Preserve raw reconstruction error in raw_data
+                    raw_data['reconstruction_error'] = reconstruction_error
+                    raw_data['priority'] = str(row.get('priority', 'UNKNOWN'))
+
+                    # Calculate deviation description
+                    if mean_error > 0:
+                        deviation_multiplier = reconstruction_error / mean_error
+                        if deviation_multiplier >= threshold:
+                            deviation = f"+{deviation_multiplier:.1f}x above mean (threshold: {threshold})"
+                        else:
+                            deviation = f"{deviation_multiplier:.1f}x mean"
+                    else:
+                        deviation = f"error: {reconstruction_error:.2f}"
 
                     await anomaly_repo.create_anomaly(
                         dataset_id=dataset_id,
                         user_id=user_id,
-                        anomaly_score=float(row['reconstruction_error']),
+                        anomaly_score=normalized_score,  # Normalized to 0-1
                         row_index=int(row.get('sequence_index', 0)),
                         sheet_name="Sheet1",
                         raw_data=raw_data,
                         anomalous_features=[
                             {
                                 "feature_name": "reconstruction_error",
-                                "actual_value": float(row['reconstruction_error']),
-                                "reconstruction_error": float(row['reconstruction_error']),
-                                "priority": str(row.get('priority', 'UNKNOWN'))
+                                "actual_value": reconstruction_error,
+                                "expected_value": mean_error,
+                                "deviation": deviation,
+                                "contribution_score": normalized_score  # Same as anomaly_score
                             }
                         ]
                     )
@@ -457,215 +482,6 @@ async def run_autoencoder_background(dataset_id: str, user_id: str):
             )
         except:
             pass
-
-
-@router.post("/datasets/{dataset_id}/start-autoencoder")
-async def start_autoencoder_analysis(
-    dataset_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """
-    STEP 2: Start autoencoder analysis on uploaded dataset.
-
-    This endpoint:
-    - Downloads Excel/CSV from S3
-    - Trains autoencoder on the data
-    - Detects ALL anomalies (stores all in database)
-    - Updates dataset status to 'analyzed'
-    - Returns summary
-
-    Call this AFTER uploading a dataset.
-    Then call /datasets/{dataset_id}/start-llm-analysis for LLM triage.
-    """
-    session = None
-    try:
-        from app.utils.anomaly_detector import detect_anomalies_in_excel, TF_AVAILABLE
-        from pymongo.errors import DuplicateKeyError
-
-        if not TF_AVAILABLE:
-            raise HTTPException(
-                status_code=500,
-                detail="TensorFlow not available. Please install: pip install tensorflow>=2.13.0"
-            )
-
-        # Get dataset
-        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
-        if not dataset:
-            raise HTTPException(status_code=404, detail="Dataset not found")
-
-        logger.info(f"Starting TEST analysis for dataset {dataset_id}")
-
-        # Check for existing active session (Option A: only one active session per dataset)
-        existing_session = await anomaly_repo.get_session_by_dataset(dataset_id, current_user)
-        if existing_session and existing_session.status in [SessionStatus.INITIALIZING, SessionStatus.PARSING, SessionStatus.DETECTING]:
-            logger.info(f"Reusing existing active session {existing_session.id} for dataset {dataset_id}")
-            session = existing_session
-        else:
-            # Create new analysis session
-            try:
-                session = await anomaly_repo.create_analysis_session(
-                    user_id=str(current_user.id),
-                    dataset_id=dataset_id
-                )
-            except DuplicateKeyError:
-                # Race condition: another request created a session first
-                logger.warning(f"Duplicate key error creating session for dataset {dataset_id}, fetching existing session")
-                session = await anomaly_repo.get_session_by_dataset(dataset_id, current_user)
-                if not session:
-                    raise HTTPException(status_code=409, detail="Session conflict - please try again")
-
-        # Update status to parsing
-        await anomaly_repo.update_session_progress(
-            session_id=session.id,
-            status=SessionStatus.PARSING,
-            progress=10,
-            current_step="Downloading file from S3..."
-        )
-        await anomaly_repo.update_dataset(dataset_id, {"status": "analyzing"})
-
-        # Download file from S3
-        logger.info(f"Downloading from S3: {dataset.s3_key}")
-        file_content = s3_manager.get_object_stream(dataset.s3_key).read()
-
-        # Parse file to DataFrame (handle both XLSX and CSV)
-        await anomaly_repo.update_session_progress(
-            session_id=session.id,
-            status=SessionStatus.PARSING,
-            progress=30,
-            current_step="Parsing file..."
-        )
-
-        is_csv = dataset.filename.lower().endswith('.csv')
-        if is_csv:
-            from io import StringIO
-            # Decode bytes to string for CSV
-            try:
-                text_content = file_content.decode('utf-8')
-            except UnicodeDecodeError:
-                text_content = file_content.decode('latin-1')
-            df = pd.read_csv(StringIO(text_content))
-        else:
-            from io import BytesIO
-            df = pd.read_excel(BytesIO(file_content), sheet_name=0)
-
-        logger.info(f"Parsed file: {len(df)} rows, {len(df.columns)} columns")
-
-        # Detect anomalies
-        await anomaly_repo.update_session_progress(
-            session_id=session.id,
-            status=SessionStatus.DETECTING,
-            progress=50,
-            current_step="Training autoencoder model..."
-        )
-        logger.info("Running anomaly detection...")
-        anomalies, detector = detect_anomalies_in_excel(
-            df=df,
-            model_path=None,  # Train a new model
-            train_if_needed=True
-        )
-
-        logger.info(f"Detected {len(anomalies)} anomalies")
-
-        # Store anomalies in database
-        await anomaly_repo.update_session_progress(
-            session_id=session.id,
-            status=SessionStatus.DETECTING,
-            progress=80,
-            current_step=f"Storing {len(anomalies)} detected anomalies..."
-        )
-        stored_count = 0
-        for anomaly in anomalies:
-            try:
-                await anomaly_repo.create_anomaly(
-                    dataset_id=dataset_id,
-                    user_id=str(current_user.id),
-                    anomaly_score=anomaly["anomaly_score"],
-                    row_index=anomaly["row_index"],
-                    sheet_name="Sheet1",
-                    raw_data=anomaly["raw_data"],
-                    anomalous_features=anomaly["anomalous_features"]
-                )
-                stored_count += 1
-            except Exception as e:
-                logger.error(f"Error storing anomaly at row {anomaly['row_index']}: {str(e)}")
-
-        # Update dataset status to ANALYZED (autoencoder complete)
-        await anomaly_repo.update_dataset(
-            dataset_id=dataset_id,
-            updates={
-                "status": "analyzed",  # Ready for LLM triage
-                "anomaly_count": stored_count,
-                "analyzed_at": datetime.utcnow()
-            }
-        )
-
-        # Mark session as completed
-        await anomaly_repo.update_session_progress(
-            session_id=session.id,
-            status=SessionStatus.COMPLETED,
-            progress=100,
-            current_step="Analysis complete",
-            anomalies_detected=stored_count
-        )
-
-        logger.info(f"Analysis complete: {stored_count} anomalies stored")
-
-        return {
-            "dataset_id": dataset_id,
-            "status": "completed",
-            "total_rows": len(df),
-            "total_columns": len(df.columns),
-            "anomalies_detected": len(anomalies),
-            "anomalies_stored": stored_count,
-            "anomaly_percentage": f"{(len(anomalies) / len(df) * 100):.2f}%",
-            "threshold_used": float(detector.threshold),
-            "columns_analyzed": df.columns.tolist()[:10]  # First 10 columns
-        }
-
-    except HTTPException as he:
-        # If it's a 404 or other HTTP exception, don't try to update dataset status
-        logger.error(f"HTTP error analyzing dataset {dataset_id}: {he.detail}")
-
-        # Only update session if it was created
-        if session:
-            try:
-                await anomaly_repo.update_session_progress(
-                    session_id=session.id,
-                    status=SessionStatus.ERROR,
-                    progress=0,
-                    current_step="Analysis failed",
-                    error_message=str(he.detail)
-                )
-            except:
-                pass
-        raise
-    except Exception as e:
-        logger.error(f"Error analyzing dataset {dataset_id}: {str(e)}", exc_info=True)
-        # Update dataset status to failed (only if we got past the dataset fetch)
-        try:
-            await anomaly_repo.update_dataset(
-                dataset_id=dataset_id,
-                updates={"status": "error"}
-            )
-            logger.info(f"Updated dataset {dataset_id} status to 'error'")
-        except Exception as update_error:
-            logger.error(f"Failed to update dataset status to 'error': {str(update_error)}")
-
-        # Update session to error if it exists
-        if session:
-            try:
-                await anomaly_repo.update_session_progress(
-                    session_id=session.id,
-                    status=SessionStatus.ERROR,
-                    progress=0,
-                    current_step="Analysis failed",
-                    error_message=str(e)
-                )
-            except Exception as session_error:
-                logger.error(f"Failed to update session status: {str(session_error)}")
-
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
 
 # ============================================================================
 # ANOMALY ROUTES

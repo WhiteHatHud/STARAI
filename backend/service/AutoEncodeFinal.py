@@ -122,6 +122,8 @@ def run_anomaly_detection(dataset_path, model_dir='../../Model/AutoEncoder', out
         'precision': float(precision),
         'recall': float(recall),
         'f1_score': float(f1),
+        'max_reconstruction_error': float(reconstruction_errors.max()),
+        'mean_reconstruction_error': float(reconstruction_errors.mean()),
         'full_results_path': None,
         'top_2_path': None
     }
