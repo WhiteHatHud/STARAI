@@ -33,6 +33,7 @@ services:
         condition: service_healthy
     volumes:
       - ./newfrontend/src/presentation_templates:/app/presentation_templates:ro
+      - ./Model:/app/Model:ro
     develop:
       watch:
         - action: sync+restart
@@ -102,6 +103,7 @@ services:
       - default
     volumes:
       - ./newfrontend/src/presentation_templates:/app/presentation_templates:ro
+      - ./Model:/app/Model:ro
     profiles: ["", "dev"]
 
   mongodb:

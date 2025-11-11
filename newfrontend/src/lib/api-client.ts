@@ -168,19 +168,27 @@ export class StarAIClient {
     },
 
     // Analysis operations
-    analyze: async (id: string): Promise<AnalysisResult> => {
-      const response = await this.axios.post<AnalysisResult>(
-        `/anomaly/datasets/${id}/analyze-test`,
+    analyze: async (id: string): Promise<{ session_id: string; reused: boolean }> => {
+      const response = await this.axios.post<{ session_id: string; reused: boolean }>(
+        `/anomaly/datasets/${id}/analyze`,
         {}
       );
       return response.data;
     },
 
-    // Get analysis session/progress
-    session: async (id: string): Promise<AnalysisSession> => {
-      const response = await this.axios.get<AnalysisSession>(
-        `/anomaly/datasets/${id}/session`
-      );
+    // Get dataset status for polling
+    status: async (id: string): Promise<{
+      status: string;
+      progress: number;
+      error: string | null;
+      anomaly_count: number;
+    }> => {
+      const response = await this.axios.get<{
+        status: string;
+        progress: number;
+        error: string | null;
+        anomaly_count: number;
+      }>(`/anomaly/datasets/${id}/status`);
       return response.data;
     },
   };

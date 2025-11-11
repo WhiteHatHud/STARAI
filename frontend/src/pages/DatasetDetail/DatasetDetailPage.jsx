@@ -90,57 +90,94 @@ const DatasetDetailPage = () => {
     loadData();
   }, [datasetId]);
 
-  // Trigger analysis
-  const handleAnalyze = async () => {
+  // STEP 2: Trigger Autoencoder Analysis
+  const handleAutoencoder = async () => {
     setAnalyzing(true);
     setAnalysisProgress(0);
 
-    // Simulate progress (since backend doesn't provide real-time progress)
-    const progressInterval = setInterval(() => {
-      setAnalysisProgress((prev) => Math.min(prev + 5, 90));
-    }, 1000);
-
     try {
-      message.info("Starting anomaly detection analysis...");
+      message.info("🤖 Starting autoencoder analysis...");
 
-      const response = await axios.post(
-        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/analyze-test`,
+      // Start the analysis (returns immediately)
+      await axios.post(
+        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/analyze`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      clearInterval(progressInterval);
-      setAnalysisProgress(100);
+      message.success("Analysis started! Polling for progress...");
 
-      message.success(
-        `Analysis complete! Detected ${response.data.anomalies_detected} anomalies.`
-      );
+      // Start polling for status
+      await pollDatasetStatus();
 
-      // Refresh data
-      await fetchDataset();
-      await fetchAnomalies();
     } catch (error) {
-      clearInterval(progressInterval);
-      console.error("Analysis error:", error);
+      console.error("Autoencoder error:", error);
       message.error(
-        error.response?.data?.detail || "Analysis failed. Please try again."
+        error.response?.data?.detail || "Failed to start autoencoder analysis."
       );
-    } finally {
       setAnalyzing(false);
       setAnalysisProgress(0);
     }
   };
 
-  // Trigger LLM Analysis (only top 2 anomalies)
+  // Poll dataset status during analysis
+  const pollDatasetStatus = async () => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await axios.get(
+          `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/status`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        const { status, progress, error: errorMsg, anomaly_count } = response.data;
+
+        // Update progress
+        setAnalysisProgress(progress || 0);
+
+        // Check if complete or failed
+        if (status === "analyzed") {
+          clearInterval(pollInterval);
+          setAnalyzing(false);
+          setAnalysisProgress(100);
+          message.success(`✅ Autoencoder complete! Detected ${anomaly_count} anomalies.`);
+
+          // Refresh data
+          await fetchDataset();
+          await fetchAnomalies();
+        } else if (status === "error" || status === "failed") {
+          clearInterval(pollInterval);
+          setAnalyzing(false);
+          setAnalysisProgress(0);
+          message.error(errorMsg || "Analysis failed");
+          await fetchDataset();
+        }
+      } catch (error) {
+        console.error("Polling error:", error);
+        clearInterval(pollInterval);
+        setAnalyzing(false);
+      }
+    }, 3000); // Poll every 3 seconds
+
+    // Timeout after 10 minutes
+    setTimeout(() => {
+      clearInterval(pollInterval);
+      if (analyzing) {
+        setAnalyzing(false);
+        message.warning("Analysis is taking longer than expected. Please refresh the page.");
+      }
+    }, 600000);
+  };
+
+  // STEP 3: Trigger LLM Triage Analysis
   const handleLLMAnalysis = async (maxAnomalies = 2) => {
     setAnalyzingLLM(true);
     setLlmAnalysisResult(null);
 
     try {
-      message.info(`Analyzing top ${maxAnomalies} anomalies with AI...`);
+      message.info(`🧠 Analyzing top ${maxAnomalies} anomalies with AI...`);
 
       const response = await axios.post(
-        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/analyze-with-llm?max_anomalies=${maxAnomalies}`,
+        `${import.meta.env.VITE_API_BASE_URL}/anomaly/datasets/${datasetId}/start-llm-analysis?max_anomalies=${maxAnomalies}`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -148,16 +185,16 @@ const DatasetDetailPage = () => {
       setLlmAnalysisResult(response.data);
 
       message.success(
-        `LLM Analysis complete! Generated ${response.data.explanations_created} explanations.`
+        `✅ LLM Triage complete! Generated ${response.data.explanations_created} explanations.`
       );
 
-      // Refresh anomalies to show updated data
+      // Refresh dataset status (should now be 'completed')
+      await fetchDataset();
       await fetchAnomalies();
     } catch (error) {
       console.error("LLM Analysis error:", error);
-      message.error(
-        error.response?.data?.detail || "LLM Analysis failed. Please check Azure OpenAI configuration."
-      );
+      const errorMsg = error.response?.data?.detail || "LLM Analysis failed. Please check Azure OpenAI configuration.";
+      message.error(errorMsg);
     } finally {
       setAnalyzingLLM(false);
     }
@@ -233,12 +270,17 @@ const DatasetDetailPage = () => {
   // Render status badge
   const renderStatusBadge = (status) => {
     const statusConfig = {
-      pending: { color: "default", icon: <ClockCircleOutlined />, text: "Pending" },
-      processing: { color: "blue", icon: <Spin size="small" />, text: "Processing" },
+      uploaded: { color: "default", icon: <ClockCircleOutlined />, text: "Uploaded" },
+      parsing: { color: "blue", icon: <Spin size="small" />, text: "Parsing" },
+      parsed: { color: "cyan", icon: <CheckCircleOutlined />, text: "Parsed" },
+      analyzing: { color: "blue", icon: <Spin size="small" />, text: "Analyzing (Autoencoder)" },
+      analyzed: { color: "cyan", icon: <CheckCircleOutlined />, text: "Analyzed - Ready for LLM" },
+      triaging: { color: "purple", icon: <Spin size="small" />, text: "AI Triage in Progress" },
       completed: { color: "green", icon: <CheckCircleOutlined />, text: "Completed" },
+      error: { color: "red", icon: <WarningOutlined />, text: "Error" },
       failed: { color: "red", icon: <WarningOutlined />, text: "Failed" },
     };
-    const config = statusConfig[status] || statusConfig.pending;
+    const config = statusConfig[status] || statusConfig.uploaded;
     return (
       <Tag icon={config.icon} color={config.color}>
         {config.text}
@@ -267,8 +309,11 @@ const DatasetDetailPage = () => {
     );
   }
 
-  const needsAnalysis = dataset.status === "pending" || dataset.status === "failed";
-  const isAnalyzed = dataset.status === "completed";
+  // Workflow state checks
+  const needsAutoencoder = dataset.status === "uploaded" || dataset.status === "error";
+  const needsLLM = dataset.status === "analyzed";
+  const isCompleted = dataset.status === "completed";
+  const isProcessing = dataset.status === "analyzing" || dataset.status === "triaging" || dataset.status === "parsing";
 
   return (
     <div style={{ padding: "24px" }}>
@@ -341,11 +386,11 @@ const DatasetDetailPage = () => {
         </Descriptions>
       </Card>
 
-      {/* Analysis Controls */}
-      {needsAnalysis && !analyzing && (
+      {/* STEP 2: Autoencoder Analysis Controls */}
+      {needsAutoencoder && !analyzing && (
         <Alert
-          message="Dataset not analyzed yet"
-          description="Click the button below to start anomaly detection analysis. This may take a few minutes depending on the dataset size."
+          message="🤖 Step 2: Run Autoencoder Analysis"
+          description="Click the button below to train an autoencoder and detect anomalies in your dataset. This may take a few minutes depending on the dataset size."
           type="info"
           showIcon
           action={
@@ -353,9 +398,9 @@ const DatasetDetailPage = () => {
               type="primary"
               size="large"
               icon={<RocketOutlined />}
-              onClick={handleAnalyze}
+              onClick={handleAutoencoder}
             >
-              Start Analysis
+              Start Autoencoder
             </Button>
           }
           style={{ marginBottom: 24 }}
@@ -365,36 +410,33 @@ const DatasetDetailPage = () => {
       {analyzing && (
         <Card style={{ marginBottom: 24 }}>
           <Space direction="vertical" style={{ width: "100%" }}>
-            <Text strong>Analyzing dataset...</Text>
+            <Text strong>🤖 Running Autoencoder Analysis...</Text>
             <Progress percent={analysisProgress} status="active" />
             <Text type="secondary">
-              This may take a few minutes. The autoencoder is learning patterns in your data.
+              This may take a few minutes. The autoencoder is learning patterns in your data to detect anomalies.
             </Text>
           </Space>
         </Card>
       )}
 
-      {/* LLM Analysis Button - Shows after autoencoder completes */}
-      {isAnalyzed && anomalies.length > 0 && !analyzingLLM && (
+      {/* STEP 3: LLM Triage Analysis - Shows after autoencoder completes */}
+      {needsLLM && anomalies.length > 0 && !analyzingLLM && (
         <Alert
-          message="🤖 AI Triage Analysis Available"
+          message="🧠 Step 3: Run AI Triage Analysis"
           description={
             <Space direction="vertical" size="small">
+              <Text strong>
+                ✅ Autoencoder detected {dataset.anomaly_count} anomalies!
+              </Text>
               <Text>
-                Run AI-powered security analysis on the top {Math.min(2, anomalies.length)} highest-scoring anomalies.
+                Now run AI-powered security triage on the top {Math.min(2, anomalies.length)} highest-scoring anomalies.
               </Text>
               <Text type="secondary" style={{ fontSize: "12px" }}>
-                This will use Azure OpenAI to generate detailed security insights, MITRE ATT&CK mappings, and triage recommendations.
+                This will use Azure OpenAI to generate detailed security insights, MITRE ATT&CK mappings, severity assessments, and triage recommendations.
               </Text>
-              {llmAnalysisResult && (
-                <Text type="success" strong>
-                  ✓ Last analysis: {llmAnalysisResult.explanations_created} explanations created
-                  ({llmAnalysisResult.total_anomalies_detected} total anomalies detected)
-                </Text>
-              )}
             </Space>
           }
-          type="info"
+          type="success"
           showIcon
           action={
             <Space direction="vertical">
@@ -405,7 +447,7 @@ const DatasetDetailPage = () => {
                 onClick={() => handleLLMAnalysis(2)}
                 loading={analyzingLLM}
               >
-                Analyze Top 2 with AI
+                🧠 Analyze Top 2 with AI
               </Button>
               <Button
                 size="small"
@@ -433,8 +475,8 @@ const DatasetDetailPage = () => {
         </Card>
       )}
 
-      {/* Anomalies Table */}
-      {isAnalyzed && (
+      {/* Anomalies Table - Show if autoencoder has run */}
+      {(needsLLM || isCompleted) && (
         <Card
           title={
             <Space>
@@ -474,13 +516,34 @@ const DatasetDetailPage = () => {
         </Card>
       )}
 
-      {/* Failed state */}
-      {dataset.status === "failed" && (
+      {/* Error/Failed state */}
+      {(dataset.status === "error" || dataset.status === "failed") && (
         <Alert
           message="Analysis Failed"
-          description="The analysis failed. Please try again or contact support if the issue persists."
+          description="The analysis encountered an error. Please try again or contact support if the issue persists."
           type="error"
           showIcon
+          style={{ marginBottom: 24 }}
+        />
+      )}
+
+      {/* Completed state - Show success message */}
+      {isCompleted && llmAnalysisResult && (
+        <Alert
+          message="✅ Analysis Complete!"
+          description={
+            <Space direction="vertical" size="small">
+              <Text>
+                All stages completed successfully. {llmAnalysisResult.explanations_created} AI triage reports generated.
+              </Text>
+              <Text type="secondary" style={{ fontSize: "12px" }}>
+                You can now view the detailed anomaly analysis and LLM explanations below.
+              </Text>
+            </Space>
+          }
+          type="success"
+          showIcon
+          closable
           style={{ marginBottom: 24 }}
         />
       )}

@@ -214,7 +214,7 @@ const HomePage = () => {
                         icon={<RocketOutlined />}
                         onClick={() => handleViewDataset(dataset)}
                       >
-                        {dataset.status === 'pending' ? 'Analyze' : 'View Details'}
+                        {dataset.status === 'uploaded' ? 'Analyze' : 'View Details'}
                       </Button>,
                     ]}
                   >
@@ -227,7 +227,14 @@ const HomePage = () => {
                       title={
                         <Flex gap="small" wrap="wrap">
                           <Text strong>{dataset.filename}</Text>
-                          <Tag color={dataset.status === 'completed' ? 'green' : dataset.status === 'processing' ? 'blue' : 'orange'}>
+                          <Tag color={
+                            dataset.status === 'completed' ? 'green' :
+                            dataset.status === 'analyzed' ? 'cyan' :
+                            dataset.status === 'triaging' ? 'blue' :
+                            dataset.status === 'analyzing' ? 'blue' :
+                            dataset.status === 'error' ? 'red' :
+                            'orange'
+                          }>
                             {dataset.status}
                           </Tag>
                         </Flex>

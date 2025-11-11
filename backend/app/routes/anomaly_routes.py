@@ -9,7 +9,10 @@ from fastapi.responses import StreamingResponse, FileResponse
 from typing import List, Optional
 import logging
 import io
+import asyncio
 from datetime import datetime
+from pymongo.errors import DuplicateKeyError
+from bson import ObjectId
 
 from app.models.models import User
 from app.models.anomaly_models import (
@@ -202,29 +205,289 @@ async def delete_dataset(
         raise HTTPException(status_code=500, detail="Failed to delete dataset")
 
 
-@router.post("/datasets/{dataset_id}/analyze-test")
-async def analyze_dataset_test(
+@router.post("/datasets/{dataset_id}/analyze", status_code=202)
+async def start_analysis(
     dataset_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    TEST ENDPOINT: Analyze dataset for anomalies (synchronous).
+    Start autoencoder analysis on uploaded dataset (single active session).
 
-    This is for testing only. In production, use async Celery tasks.
+    Returns immediately with session_id while analysis runs in background.
+    Poll /datasets/{dataset_id}/status for progress.
+    """
+    try:
+        # Get dataset and verify ownership
+        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+
+        # Check for existing active session (reuse if exists)
+        from app.database.connection import analysis_sessions_collection
+        existing = analysis_sessions_collection.find_one({
+            "dataset_id": dataset_id,
+            "status": {"$in": ["initializing", "parsing", "detecting"]}
+        })
+
+        if existing:
+            logger.info(f"Reusing existing session {existing['_id']} for dataset {dataset_id}")
+            return {"session_id": str(existing["_id"]), "reused": True}
+
+        # Create new session
+        try:
+            session_doc = {
+                "dataset_id": dataset_id,
+                "user_id": str(current_user.id),
+                "status": "initializing",  # Changed from "pending" to "initializing"
+                "progress": 0,
+                "created_at": datetime.utcnow()
+            }
+            result = analysis_sessions_collection.insert_one(session_doc)
+            session_id = str(result.inserted_id)
+        except DuplicateKeyError:
+            # Race condition - another request created it first
+            existing = analysis_sessions_collection.find_one({
+                "dataset_id": dataset_id,
+                "status": {"$in": ["initializing", "parsing", "detecting"]}
+            })
+            if existing:
+                return {"session_id": str(existing["_id"]), "reused": True}
+            raise HTTPException(status_code=409, detail="Session conflict")
+
+        # Update dataset status to processing
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"status": "analyzing", "progress": 0}
+        )
+
+        # Kick off background task
+        asyncio.create_task(run_autoencoder_background(dataset_id, str(current_user.id)))
+
+        logger.info(f"Started analysis session {session_id} for dataset {dataset_id}")
+        return {"session_id": session_id, "reused": False}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting analysis for dataset {dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start analysis: {str(e)}")
+
+
+async def run_autoencoder_background(dataset_id: str, user_id: str):
+    """Background task to run autoencoder analysis using AutoencoderService"""
+    try:
+        from app.database.connection import datasets_collection
+        import sys
+        from pathlib import Path
+
+        logger.info(f"Starting background analysis for dataset {dataset_id}")
+
+        # Add service directory to path to import AutoencoderService
+        # In Docker: /app/backend/service, Local: ../service relative to this file
+        service_dir_docker = Path("/app/backend/service")
+        service_dir_local = Path(__file__).resolve().parent.parent.parent / "service"
+
+        if service_dir_docker.exists():
+            service_dir = service_dir_docker
+        else:
+            service_dir = service_dir_local
+
+        sys.path.insert(0, str(service_dir))
+
+        logger.info(f"Added service directory to path: {service_dir}")
+
+        try:
+            from autoencoder_service import AutoencoderService
+            logger.info("Successfully imported AutoencoderService")
+        except Exception as import_error:
+            logger.error(f"Failed to import AutoencoderService: {str(import_error)}", exc_info=True)
+            raise
+
+        # Get dataset info
+        dataset_doc = datasets_collection.find_one({"_id": ObjectId(dataset_id)})
+        if not dataset_doc:
+            logger.error(f"Dataset {dataset_id} not found")
+            return
+
+        # Update progress: downloading
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"status": "analyzing", "progress": 10}
+        )
+
+        # Download file from S3
+        logger.info(f"Downloading dataset {dataset_id} from S3: {dataset_doc['s3_key']}")
+        file_content = s3_manager.get_object_stream(dataset_doc['s3_key']).read()
+
+        # Parse file
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 30}
+        )
+
+        is_csv = dataset_doc['filename'].lower().endswith('.csv')
+        if is_csv:
+            from io import StringIO
+            try:
+                text_content = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                text_content = file_content.decode('latin-1')
+            df = pd.read_csv(StringIO(text_content))
+        else:
+            from io import BytesIO
+            df = pd.read_excel(BytesIO(file_content), sheet_name=0)
+
+        logger.info(f"Parsed file: {len(df)} rows, {len(df.columns)} columns")
+
+        # Initialize AutoencoderService with pre-trained model
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 40}
+        )
+
+        logger.info("Initializing AutoencoderService with pre-trained model...")
+        # Path is mounted in Docker container at /app/Model
+        model_dir = Path("/app/Model/AutoEncoder")
+        service = AutoencoderService(
+            model_path=str(model_dir / "autoencoder_final.h5"),
+            preprocessor_path=str(model_dir / "preprocessor.pkl"),
+            threshold_path=str(model_dir / "threshold.npy")
+        )
+
+        # Run analysis
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 50}
+        )
+
+        logger.info("Running anomaly detection...")
+        results_df = service.analyze_dataset(df)
+
+        # Filter only anomalies (anomaly_prediction == 1)
+        anomalies_df = results_df[results_df['anomaly_prediction'] == 1]
+        logger.info(f"Detected {len(anomalies_df)} anomalies out of {len(results_df)} sequences")
+
+        # Store anomalies in database
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 70}
+        )
+
+        stored_count = 0
+        for _, row in anomalies_df.iterrows():
+            try:
+                # Extract relevant columns for storage
+                raw_data = {k: v for k, v in row.to_dict().items()
+                           if k not in ['sequence_id', 'original_row_index', 'anomaly_prediction',
+                                       'reconstruction_error', 'anomaly_score']}
+
+                await anomaly_repo.create_anomaly(
+                    dataset_id=dataset_id,
+                    user_id=user_id,
+                    anomaly_score=float(row['anomaly_score']),
+                    row_index=int(row.get('original_row_index', row.get('sequence_id', 0))),
+                    sheet_name="Sheet1",
+                    raw_data=raw_data,
+                    anomalous_features=[
+                        {
+                            "feature_name": "reconstruction_error",
+                            "actual_value": float(row['reconstruction_error']),
+                            "reconstruction_error": float(row['reconstruction_error'])
+                        }
+                    ]
+                )
+                stored_count += 1
+            except Exception as e:
+                logger.error(f"Error storing anomaly: {str(e)}")
+
+        # Export anomalies to CSV
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"progress": 85}
+        )
+
+        csv_local_path = None
+        csv_s3_key = None
+
+        if len(anomalies_df) > 0:
+            try:
+                # Save locally
+                import tempfile
+                import os
+                temp_dir = tempfile.gettempdir()
+                csv_filename = f"anomalies_{dataset_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+                csv_local_path = os.path.join(temp_dir, csv_filename)
+                anomalies_df.to_csv(csv_local_path, index=False)
+                logger.info(f"Saved anomalies CSV locally: {csv_local_path}")
+
+                # Upload to S3
+                csv_s3_key = f"anomalies/{user_id}/{csv_filename}"
+                with open(csv_local_path, 'rb') as f:
+                    csv_content = f.read()
+
+                upload_success = await upload_to_s3(
+                    file_content=csv_content,
+                    s3_key=csv_s3_key,
+                    content_type="text/csv"
+                )
+
+                if upload_success:
+                    logger.info(f"Uploaded anomalies CSV to S3: {csv_s3_key}")
+                else:
+                    logger.warning("Failed to upload anomalies CSV to S3")
+                    csv_s3_key = None
+
+            except Exception as e:
+                logger.error(f"Error exporting anomalies to CSV: {str(e)}", exc_info=True)
+
+        # Mark as analyzed (ready for LLM)
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={
+                "status": "analyzed",
+                "progress": 100,
+                "anomaly_count": stored_count,
+                "analyzed_at": datetime.utcnow(),
+                "anomalies_csv_local": csv_local_path,
+                "anomalies_csv_s3": csv_s3_key
+            }
+        )
+
+        logger.info(f"Analysis complete for dataset {dataset_id}: {stored_count} anomalies (CSV: {csv_local_path})")
+
+    except Exception as e:
+        logger.error(f"Error in background autoencoder task: {str(e)}", exc_info=True)
+        try:
+            await anomaly_repo.update_dataset(
+                dataset_id=dataset_id,
+                updates={"status": "error", "error": str(e), "progress": 0}
+            )
+        except:
+            pass
+
+
+@router.post("/datasets/{dataset_id}/start-autoencoder")
+async def start_autoencoder_analysis(
+    dataset_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    STEP 2: Start autoencoder analysis on uploaded dataset.
 
     This endpoint:
     - Downloads Excel/CSV from S3
     - Trains autoencoder on the data
     - Detects ALL anomalies (stores all in database)
+    - Updates dataset status to 'analyzed'
     - Returns summary
 
-    Note: This stores ALL detected anomalies. To limit LLM analysis to top N anomalies
-    (for faster testing and lower token usage), use the /analyze-with-llm endpoint
-    with the max_anomalies parameter (default: 2).
+    Call this AFTER uploading a dataset.
+    Then call /datasets/{dataset_id}/start-llm-analysis for LLM triage.
     """
     session = None
     try:
         from app.utils.anomaly_detector import detect_anomalies_in_excel, TF_AVAILABLE
+        from pymongo.errors import DuplicateKeyError
 
         if not TF_AVAILABLE:
             raise HTTPException(
@@ -239,11 +502,24 @@ async def analyze_dataset_test(
 
         logger.info(f"Starting TEST analysis for dataset {dataset_id}")
 
-        # Create analysis session
-        session = await anomaly_repo.create_analysis_session(
-            user_id=str(current_user.id),
-            dataset_id=dataset_id
-        )
+        # Check for existing active session (Option A: only one active session per dataset)
+        existing_session = await anomaly_repo.get_session_by_dataset(dataset_id, current_user)
+        if existing_session and existing_session.status in [SessionStatus.INITIALIZING, SessionStatus.PARSING, SessionStatus.DETECTING]:
+            logger.info(f"Reusing existing active session {existing_session.id} for dataset {dataset_id}")
+            session = existing_session
+        else:
+            # Create new analysis session
+            try:
+                session = await anomaly_repo.create_analysis_session(
+                    user_id=str(current_user.id),
+                    dataset_id=dataset_id
+                )
+            except DuplicateKeyError:
+                # Race condition: another request created a session first
+                logger.warning(f"Duplicate key error creating session for dataset {dataset_id}, fetching existing session")
+                session = await anomaly_repo.get_session_by_dataset(dataset_id, current_user)
+                if not session:
+                    raise HTTPException(status_code=409, detail="Session conflict - please try again")
 
         # Update status to parsing
         await anomaly_repo.update_session_progress(
@@ -320,11 +596,11 @@ async def analyze_dataset_test(
             except Exception as e:
                 logger.error(f"Error storing anomaly at row {anomaly['row_index']}: {str(e)}")
 
-        # Update dataset status
+        # Update dataset status to ANALYZED (autoencoder complete)
         await anomaly_repo.update_dataset(
             dataset_id=dataset_id,
             updates={
-                "status": "completed",
+                "status": "analyzed",  # Ready for LLM triage
                 "anomaly_count": stored_count,
                 "analyzed_at": datetime.utcnow()
             }
@@ -704,31 +980,33 @@ async def get_analysis_session(
         raise HTTPException(status_code=500, detail="Failed to retrieve session")
 
 
-@router.get("/datasets/{dataset_id}/session", response_model=AnalysisSession)
-async def get_dataset_session(
+@router.get("/datasets/{dataset_id}/status")
+async def get_dataset_status(
     dataset_id: str,
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get analysis session for a specific dataset.
+    Get dataset status for polling during analysis.
 
-    Useful for polling progress during analysis.
+    Returns:
+    - status: Current dataset status
+    - progress: Progress percentage (0-100)
+    - error: Error message if failed
     """
     try:
-        session = await anomaly_repo.get_session_by_dataset(dataset_id, current_user)
+        dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
 
-        if not session:
-            raise HTTPException(
-                status_code=404,
-                detail="No analysis session found for this dataset"
-            )
-
-        return session
+        return {
+            "status": dataset.status,
+            "progress": getattr(dataset, 'progress', 0),
+            "error": getattr(dataset, 'error', None),
+            "anomaly_count": dataset.anomaly_count
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving session for dataset {dataset_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve session")
+        logger.error(f"Error retrieving status for dataset {dataset_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve dataset status")
 
 
 # ============================================================================
@@ -773,24 +1051,28 @@ async def health_check():
 # LLM TRIAGE ANALYSIS ROUTES
 # ============================================================================
 
-@router.post("/datasets/{dataset_id}/analyze-with-llm")
-async def analyze_dataset_with_llm(
+@router.post("/datasets/{dataset_id}/start-llm-analysis")
+async def start_llm_triage_analysis(
     dataset_id: str,
     max_anomalies: int = Query(default=2, ge=1, le=500, description="Maximum number of anomalies to analyze (default: 2 for faster testing)"),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Analyze detected anomalies using Azure OpenAI LLM.
+    STEP 3: Start LLM triage analysis on detected anomalies.
 
     This endpoint:
-    1. Fetches all detected anomalies for the dataset
-    2. Sorts anomalies by score (highest/most suspicious first)
-    3. Sends top N anomalies to Azure OpenAI GPT-5-mini for triage analysis
-    4. Stores the LLM explanations in the database
-    5. Returns summary of analysis
+    1. Verifies dataset has status 'analyzed' (autoencoder completed)
+    2. Fetches all detected anomalies for the dataset
+    3. Sorts anomalies by score (highest/most suspicious first)
+    4. Sends top N anomalies to Azure OpenAI GPT-5-mini for triage analysis
+    5. Stores the LLM explanations in the database
+    6. Updates dataset status to 'completed'
+    7. Returns summary of analysis
 
     By default, only analyzes top 2 anomalies for faster testing and lower token usage.
     Increase max_anomalies parameter for production use.
+
+    Call this AFTER /datasets/{dataset_id}/start-autoencoder completes.
 
     Requires Azure OpenAI to be configured in environment variables.
     """
@@ -809,6 +1091,20 @@ async def analyze_dataset_with_llm(
         dataset = await anomaly_repo.get_dataset(dataset_id, current_user)
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
+
+        # Verify dataset has been analyzed (autoencoder completed)
+        if dataset.status != DatasetStatus.ANALYZED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Dataset must be analyzed first. Current status: {dataset.status}. "
+                       f"Call /datasets/{dataset_id}/start-autoencoder first."
+            )
+
+        # Update status to 'triaging'
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={"status": "triaging"}
+        )
 
         logger.info(f"Starting LLM triage analysis for dataset {dataset_id}")
 
@@ -884,6 +1180,15 @@ async def analyze_dataset_with_llm(
                 # Continue with next anomaly
 
         logger.info(f"LLM analysis complete: {explanations_created} created, {explanations_skipped} skipped, {len(errors)} errors")
+
+        # Update dataset status to COMPLETED
+        await anomaly_repo.update_dataset(
+            dataset_id=dataset_id,
+            updates={
+                "status": "completed",
+                "triaged_at": datetime.utcnow()
+            }
+        )
 
         return {
             "dataset_id": dataset_id,

@@ -37,12 +37,14 @@ PyObjectId = Annotated[str, BeforeValidator(validate_object_id)]
 
 class DatasetStatus(str, Enum):
     """Status of uploaded dataset"""
-    UPLOADED = "uploaded"
-    PARSING = "parsing"
-    PARSED = "parsed"
-    ANALYZING = "analyzing"
-    COMPLETED = "completed"
-    ERROR = "error"
+    UPLOADED = "uploaded"  # File uploaded to S3 and MongoDB
+    PARSING = "parsing"  # Parsing file structure
+    PARSED = "parsed"  # File structure parsed
+    ANALYZING = "analyzing"  # Running autoencoder analysis
+    ANALYZED = "analyzed"  # Autoencoder complete, anomalies detected
+    TRIAGING = "triaging"  # Running LLM triage analysis
+    COMPLETED = "completed"  # All analysis complete
+    ERROR = "error"  # Error occurred
 
 
 class DatasetModel(BaseModel):
@@ -62,10 +64,15 @@ class DatasetModel(BaseModel):
 
     # Processing status
     status: DatasetStatus = DatasetStatus.UPLOADED
+    anomaly_count: int = 0  # Number of anomalies detected
+    progress: int = 0  # Progress percentage (0-100) for polling
+    error: Optional[str] = None  # Error message if status is 'error'
 
     # Timestamps
     uploaded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     parsed_at: Optional[datetime] = None
+    analyzed_at: Optional[datetime] = None  # When autoencoder analysis completed
+    triaged_at: Optional[datetime] = None  # When LLM triage completed
 
     model_config = {
         "populate_by_name": True,

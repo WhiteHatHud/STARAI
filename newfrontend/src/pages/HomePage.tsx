@@ -136,40 +136,45 @@ const HomePage = () => {
     }
   };
 
+  // Stop polling for a specific dataset
+  const stopPolling = useCallback((datasetId: string) => {
+    const interval = pollingIntervalsRef.current.get(datasetId);
+    if (interval) {
+      clearInterval(interval);
+      pollingIntervalsRef.current.delete(datasetId);
+    }
+  }, []);
+
   // Poll analysis progress
   const pollAnalysisProgress = useCallback(async (datasetId: string) => {
     try {
-      const session = await apiClient.datasets.session(datasetId);
+      const statusData = await apiClient.datasets.status(datasetId);
 
       setAnalysisProgress((prev) => {
         const newMap = new Map(prev);
         newMap.set(datasetId, {
           datasetId,
-          progress: session.progress || 0,
-          status: session.status,
-          message: session.message,
+          progress: statusData.progress || 0,
+          status: statusData.status,
+          message: statusData.error || undefined,
         });
         return newMap;
       });
 
-      // If completed or failed, stop polling
-      if (session.status === "completed" || session.status === "failed" || session.status === "error") {
-        const interval = pollingIntervalsRef.current.get(datasetId);
-        if (interval) {
-          clearInterval(interval);
-          pollingIntervalsRef.current.delete(datasetId);
-        }
+      // If analyzed, completed, or error, stop polling
+      if (statusData.status === "analyzed" || statusData.status === "completed" || statusData.status === "error" || statusData.status === "failed") {
+        stopPolling(datasetId);
 
         // Show completion toast
-        if (session.status === "completed") {
+        if (statusData.status === "analyzed" || statusData.status === "completed") {
           toast({
             title: "Analysis Complete",
-            description: `Detected ${session.anomalies_detected || 0} anomalies`,
+            description: `Detected ${statusData.anomaly_count || 0} anomalies`,
           });
-        } else if (session.status === "failed" || session.status === "error") {
+        } else if (statusData.status === "error" || statusData.status === "failed") {
           toast({
             title: "Analysis Failed",
-            description: session.message || "Failed to analyze dataset",
+            description: statusData.error || "Failed to analyze dataset",
             variant: "destructive",
           });
         }
@@ -188,19 +193,17 @@ const HomePage = () => {
     } catch (error) {
       console.error("Error polling progress:", error);
       // Stop polling on error
-      const interval = pollingIntervalsRef.current.get(datasetId);
-      if (interval) {
-        clearInterval(interval);
-        pollingIntervalsRef.current.delete(datasetId);
-      }
+      stopPolling(datasetId);
     }
-  }, [apiClient, fetchDatasets]);
+  }, [apiClient, fetchDatasets, stopPolling]);
 
   // Start polling for a dataset
   const startPolling = useCallback((datasetId: string) => {
-    // Don't start if already polling
-    if (pollingIntervalsRef.current.has(datasetId)) {
-      return;
+    // Stop any existing polling for this dataset first
+    const existingInterval = pollingIntervalsRef.current.get(datasetId);
+    if (existingInterval) {
+      clearInterval(existingInterval);
+      pollingIntervalsRef.current.delete(datasetId);
     }
 
     // Initial poll
@@ -209,7 +212,7 @@ const HomePage = () => {
     // Set up interval
     const interval = setInterval(() => {
       pollAnalysisProgress(datasetId);
-    }, 2000); // Poll every 2 seconds
+    }, 3000); // Poll every 3 seconds (reduced from 2s to avoid spam)
 
     pollingIntervalsRef.current.set(datasetId, interval);
   }, [pollAnalysisProgress]);
@@ -282,6 +285,12 @@ const HomePage = () => {
         return;
       }
 
+      // Check if already polling (to prevent duplicate polling)
+      if (pollingIntervalsRef.current.has(datasetId)) {
+        console.log("Already polling dataset", datasetId);
+        return;
+      }
+
       // Immediately trigger analysis
       toast({
         title: "Analysis Started",
@@ -293,7 +302,17 @@ const HomePage = () => {
 
       // Trigger analysis in the background
       axios
-        .post(`/anomaly/datasets/${datasetId}/analyze-test`, {})
+        .post(`/anomaly/datasets/${datasetId}/analyze`, {})
+        .then((response) => {
+          console.log("Analysis started:", response.data);
+          // If reused, show different message
+          if (response.data.reused) {
+            toast({
+              title: "Reusing Existing Session",
+              description: "Analysis is already in progress",
+            });
+          }
+        })
         .catch((error) => {
           console.error("Analysis error:", error);
           toast({
@@ -301,6 +320,8 @@ const HomePage = () => {
             description: error.response?.data?.detail || "Failed to analyze dataset",
             variant: "destructive",
           });
+          // Stop polling on error
+          stopPolling(datasetId);
           // Refresh anyway to show failed status
           dataFetchedRef.current = false;
           fetchDatasets();

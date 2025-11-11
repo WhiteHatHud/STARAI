@@ -91,12 +91,18 @@ class TabularAnomalyDetector:
         X = df[all_cols].values.astype(float)
 
         # Handle missing values
-        imputer = SimpleImputer(strategy='mean')
         if fit:
+            imputer = SimpleImputer(strategy='mean')
             X = imputer.fit_transform(X)
             self.imputer = imputer
         else:
-            X = self.imputer.transform(X)
+            # If imputer is missing from loaded model, create a new one and fit it
+            if self.imputer is None:
+                logger.warning("Imputer not found in metadata, creating and fitting new imputer")
+                self.imputer = SimpleImputer(strategy='mean')
+                X = self.imputer.fit_transform(X)
+            else:
+                X = self.imputer.transform(X)
 
         # Scale features
         if fit:
@@ -295,35 +301,78 @@ class TabularAnomalyDetector:
         logger.info(f"Model saved to {directory}")
 
     @classmethod
-    def load(cls, directory: str):
-        """Load model and preprocessors from directory."""
+    def load(cls, directory: str, threshold_path: Optional[str] = None):
+        """
+        Load model and preprocessors from directory.
+
+        Args:
+            directory: Directory containing autoencoder.h5 and metadata.pkl
+            threshold_path: Optional path to .npy file containing threshold value
+        """
         if not TF_AVAILABLE:
             raise RuntimeError("TensorFlow is required to load models")
 
         # Load metadata
-        with open(os.path.join(directory, 'metadata.pkl'), 'rb') as f:
+        metadata_path = os.path.join(directory, 'metadata.pkl')
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"metadata.pkl not found in {directory}")
+
+        with open(metadata_path, 'rb') as f:
             metadata = pickle.load(f)
 
-        # Create instance
+        # Create instance with defaults if metadata is incomplete
         detector = cls(
-            encoding_dim=metadata['encoding_dim'],
-            threshold_percentile=metadata['threshold_percentile']
+            encoding_dim=metadata.get('encoding_dim', 8),
+            threshold_percentile=metadata.get('threshold_percentile', 95)
         )
 
-        # Load Keras model
+        # Load Keras model with custom objects to handle legacy formats
         model_path = os.path.join(directory, 'autoencoder.h5')
         if os.path.exists(model_path):
-            detector.autoencoder = keras.models.load_model(model_path)
+            # Define custom objects for legacy model compatibility
+            custom_objects = {
+                'mse': 'mean_squared_error',
+                'mae': 'mean_absolute_error',
+            }
+            try:
+                # Try loading with compile=False to avoid metric/loss deserialization issues
+                detector.autoencoder = keras.models.load_model(model_path, compile=False)
 
-        # Restore metadata
-        detector.threshold = metadata['threshold']
-        detector.scaler = metadata['scaler']
-        detector.label_encoders = metadata['label_encoders']
-        detector.imputer = metadata['imputer']
-        detector.numeric_cols = metadata['numeric_cols']
-        detector.categorical_cols = metadata['categorical_cols']
-        detector.feature_names = metadata['feature_names']
-        detector.is_trained = metadata['is_trained']
+                # Manually recompile the model with correct loss/metrics
+                detector.autoencoder.compile(
+                    optimizer=keras.optimizers.Adam(learning_rate=0.001),
+                    loss='mse',
+                    metrics=['mae']
+                )
+                logger.info(f"Loaded and recompiled autoencoder model from {model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load model with compile=False: {e}")
+                # Fallback: try with custom objects
+                detector.autoencoder = keras.models.load_model(model_path, custom_objects=custom_objects)
+                logger.info(f"Loaded autoencoder model from {model_path} with custom objects")
+        else:
+            raise FileNotFoundError(f"autoencoder.h5 not found in {directory}")
+
+        # Restore metadata (with fallbacks for missing fields)
+        detector.scaler = metadata.get('scaler', StandardScaler())
+        detector.label_encoders = metadata.get('label_encoders', {})
+        detector.imputer = metadata.get('imputer', None)
+        detector.numeric_cols = metadata.get('numeric_cols', [])
+        detector.categorical_cols = metadata.get('categorical_cols', [])
+        detector.feature_names = metadata.get('feature_names', [])
+        detector.is_trained = metadata.get('is_trained', True)
+
+        # Load threshold from .npy file if provided, otherwise from metadata
+        if threshold_path and os.path.exists(threshold_path):
+            detector.threshold = float(np.load(threshold_path))
+            logger.info(f"Loaded threshold from {threshold_path}: {detector.threshold}")
+        elif 'threshold' in metadata:
+            detector.threshold = metadata['threshold']
+            logger.info(f"Loaded threshold from metadata: {detector.threshold}")
+        else:
+            # Use a default threshold if none available
+            detector.threshold = 0.1
+            logger.warning(f"No threshold found, using default: {detector.threshold}")
 
         logger.info(f"Model loaded from {directory}")
         return detector
@@ -332,15 +381,17 @@ class TabularAnomalyDetector:
 def detect_anomalies_in_excel(
     df: pd.DataFrame,
     model_path: Optional[str] = None,
-    train_if_needed: bool = True
+    train_if_needed: bool = True,
+    threshold_path: Optional[str] = None
 ) -> Tuple[List[Dict], TabularAnomalyDetector]:
     """
     High-level function to detect anomalies in Excel data.
 
     Args:
         df: Input DataFrame from Excel
-        model_path: Path to pre-trained model (optional)
+        model_path: Path to pre-trained model directory (optional)
         train_if_needed: Whether to train a new model if none exists
+        threshold_path: Path to .npy file containing threshold value (optional)
 
     Returns:
         Tuple of (anomalies_list, detector_model)
@@ -355,7 +406,7 @@ def detect_anomalies_in_excel(
     # Load or create detector
     if model_path and os.path.exists(model_path):
         logger.info(f"Loading pre-trained model from {model_path}")
-        detector = TabularAnomalyDetector.load(model_path)
+        detector = TabularAnomalyDetector.load(model_path, threshold_path=threshold_path)
     elif train_if_needed:
         logger.info("Training new anomaly detection model...")
         detector = TabularAnomalyDetector(encoding_dim=8, threshold_percentile=95)
