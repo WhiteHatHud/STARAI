@@ -40,7 +40,6 @@ frontend/.env.local
 
 # Logs
 *.log
-backend/case_study_generation.log
 logs/
 *.log.*
 
