@@ -11,7 +11,7 @@ celery_app = Celery(
     "starai_backend",
     broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
     backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-    include=['app.tasks.report_tasks', 'app.tasks.template_tasks', 'app.tasks.document_tasks']
+    include=[]  # Task modules can be added here for anomaly detection
 )
 
 # Configure Celery settings

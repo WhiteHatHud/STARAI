@@ -19,8 +19,9 @@ client = AzureOpenAI(
     api_key=API_KEY,
 )
 
-INPUT_CSV = "BETH_anomaly.csv"                # your anomalies file (TSV or CSV)
-OUTPUT_JSONL = "BETH_llm_explanations.jsonl"  # only JSON explanations
+# Read from environment variables (set by API endpoint) or use defaults
+INPUT_CSV = os.environ.get("INPUT_CSV", "BETH_anomaly.csv")  # your anomalies file (TSV or CSV)
+OUTPUT_JSONL = os.environ.get("OUTPUT_JSONL", "BETH_llm_explanations.jsonl")  # only JSON explanations
 MAX_ROWS = 200                                # safety limit
 
 

@@ -13,5 +13,5 @@ COPY . .
 # Expose React dev server port
 EXPOSE 3000
 
-# Run React dev server
-CMD ["npm", "start"]
+# Run Vite dev server
+CMD ["npm", "run", "dev"]

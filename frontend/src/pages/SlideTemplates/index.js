@@ -1,1 +1,0 @@
-export { SlideTemplatesPage } from "./SlideTemplatesPage";

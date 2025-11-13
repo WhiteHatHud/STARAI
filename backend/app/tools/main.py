@@ -117,7 +117,6 @@ async def process_file(
 def clean_markdown_text(text: str) -> str:
     """
     Clean markdown text to plain text.
-    This utility function is used by case study generation tasks.
     """
     # Remove markdown headers (# symbols)
     text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)

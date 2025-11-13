@@ -179,8 +179,6 @@ def mass_create_users(emails: List[str], template_ids: List[str], current_admin_
     """
     Create multiple users from email list.
     Returns a list of lists for CSV response format.
-
-    Note: Template assignment removed (old case study system).
     """
     logger.info(f"Starting mass user creation for {len(emails)} emails")
 
